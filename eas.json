@@ -1,0 +1,20 @@
+{
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://kenqaivrtbemmdmthxld.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtlbnFhaXZydGJlbW1kbXRoeGxkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4NDQwNDYsImV4cCI6MjA4NzQyMDA0Nn0.unn0ok9C_tqc5t1VbreP7SIcwuC6HOnZn6qhYKF2txs",
+        "EXPO_PUBLIC_API_URL": "https://akcils-1.onrender.com"
+      }
+    },
+    "production": {}
+  }
+}
