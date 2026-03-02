@@ -20,7 +20,8 @@ import Card from '../../components/Card';
 import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 
-const { width, height } = Dimensions.get('window');
+const { width: windowWidth, height } = Dimensions.get('window');
+const width = Math.min(windowWidth, 600);
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
 const BLUE_PRIMARY = '#2563EB';
@@ -80,9 +81,9 @@ export default function Dashboard() {
                 // Trigger dashboard data fetch without awaiting all of it for the main UI to show up
                 fetchDashboardData(userRole, user.user_metadata);
             } else {
-                setRole('admin');
-                setUserName('Admin Setup');
-                fetchDashboardData('admin', null);
+                setRole('student');
+                setUserName('Guest');
+                fetchDashboardData('student', null);
             }
         } catch (error) {
             console.error('Error fetching profile:', error);

@@ -35,7 +35,8 @@ import Animated, {
 import * as Haptics from 'expo-haptics';
 import { useEffect } from 'react';
 
-const { width } = Dimensions.get('window');
+const { width: windowWidth } = Dimensions.get('window');
+const width = Math.min(windowWidth, 600);
 const BLUE_PRIMARY = '#2563EB';
 const BLUE_LIGHT = '#EFF6FF';
 const SLATE_DARK = '#0F172A';

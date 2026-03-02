@@ -22,7 +22,8 @@ import ReAnimated, {
     Extrapolate
 } from 'react-native-reanimated';
 
-const { width, height } = Dimensions.get('window');
+const { width: windowWidth, height } = Dimensions.get('window');
+const width = Math.min(windowWidth, 600);
 
 const BLUE_PRIMARY = '#2563EB';
 const BLUE_LIGHT = '#EFF6FF';

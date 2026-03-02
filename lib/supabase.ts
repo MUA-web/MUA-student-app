@@ -1,28 +1,36 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import 'react-native-url-polyfill/auto';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL as string;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_KEY as string;
 
+// Expo Static Export (Node.js) doesn't have 'window'.
+// AsyncStorage (web) and Supabase's auto-auth logic fail if they try to touch window/localStorage during SSR/SSG.
+const isServer = Platform.OS === 'web' && typeof window === 'undefined';
+
+const ssrStorage = {
+    getItem: (key: string) => Promise.resolve(null),
+    setItem: (key: string, value: string) => Promise.resolve(),
+    removeItem: (key: string) => Promise.resolve(),
+};
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
-        storage: AsyncStorage,
+        storage: isServer ? ssrStorage : AsyncStorage,
         autoRefreshToken: true,
-        persistSession: false, // User requested login on every app close
+        persistSession: true,
         detectSessionInUrl: false,
     },
 });
 
-// Tells Supabase Auth to continuously refresh the session automatically if
-// the app is in the foreground. When this is added, you will continue to receive
-// `onAuthStateChange` events with the `TOKEN_REFRESHED` or `SIGNED_OUT` event
-// if the user's session is terminated. This should only be registered once.
-AppState.addEventListener('change', (state) => {
-    if (state === 'active') {
-        supabase.auth.startAutoRefresh();
-    } else {
-        supabase.auth.stopAutoRefresh();
-    }
-});
+if (!isServer) {
+    AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+            supabase.auth.startAutoRefresh();
+        } else {
+            supabase.auth.stopAutoRefresh();
+        }
+    });
+}

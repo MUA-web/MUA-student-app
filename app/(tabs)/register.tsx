@@ -1002,7 +1002,8 @@ export default function AttendanceMarkingScreen() {
     );
 }
 
-const { width } = Dimensions.get('window');
+const { width: windowWidth } = Dimensions.get('window');
+const width = Math.min(windowWidth, 600);
 
 const styles = StyleSheet.create({
     baseContainer: {

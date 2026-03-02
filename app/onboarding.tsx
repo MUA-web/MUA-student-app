@@ -16,7 +16,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../constants/Colors';
 
-const { width, height } = Dimensions.get('window');
+const { width: windowWidth, height } = Dimensions.get('window');
+const width = Math.min(windowWidth, 600);
 
 const SLIDES = [
     {
