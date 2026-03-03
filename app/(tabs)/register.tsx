@@ -420,9 +420,11 @@ export default function AttendanceMarkingScreen() {
                 const allowedRadius = selectedCourse.radius_meters || 100; // Default to 100m for better consistency
 
                 if (distanceMeters > allowedRadius) {
+                    const isVeryFar = distanceMeters > 500;
                     Alert.alert(
                         'Out of Range',
-                        `You are approximately ${Math.round(distanceMeters)}m away from the class location. You must be within ${allowedRadius}m to mark attendance.`
+                        `You are approximately ${Math.round(distanceMeters)}m away from the class location. You must be within ${allowedRadius}m to mark attendance.` +
+                        (isVeryFar ? '\n\nIf you are actually in class, the class location might be set incorrectly. Ask your admin to check the active coordinates.' : '')
                     );
                     return;
                 }

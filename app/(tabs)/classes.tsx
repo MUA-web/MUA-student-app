@@ -4,6 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { BarCodeScanner } from 'expo-barcode-scanner';
+import { Camera } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -45,7 +47,7 @@ export default function AttendanceCameraScreen() {
     const [isBiometricSupported, setIsBiometricSupported] = useState(false);
     const [isBiometricEnrolled, setIsBiometricEnrolled] = useState(false);
 
-    const [attendanceMode, setAttendanceMode] = useState<'courses' | 'activities' | 'methods' | 'code' | 'fingerprint' | 'generate_code' | 'success'>('courses');
+    const [attendanceMode, setAttendanceMode] = useState<'courses' | 'activities' | 'methods' | 'code' | 'fingerprint' | 'generate_code' | 'success' | 'qr_scan'>('courses');
     const [attendanceCode, setAttendanceCode] = useState('');
     const [generatedCode, setGeneratedCode] = useState<string | null>(null);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -181,7 +183,7 @@ export default function AttendanceCameraScreen() {
         }
     };
 
-    const logAttendanceToBoth = async (isBiometric: boolean, code?: string) => {
+    const logAttendanceToBoth = async (method: 'fingerprint' | 'passcode' | 'qr', code?: string) => {
         if (!selectedCourse) {
             Alert.alert('Error', 'No course selected.');
             return;
@@ -220,7 +222,10 @@ export default function AttendanceCameraScreen() {
 
             if (studentError || !student) throw new Error('Could not find your student profile.');
 
-            const method = isBiometric ? 'Self (Fingerprint)' : `Self (Code: ${code})`;
+            const displayMethod =
+                method === 'fingerprint' ? 'Self (Fingerprint)' :
+                    method === 'qr' ? 'Self (QR Scan)' :
+                        `Self (Code: ${code})`;
 
             // 1. Log to attendance_logs (Supabase Direct)
             await supabase
@@ -244,7 +249,7 @@ export default function AttendanceCameraScreen() {
                     registration_number: student.registration_number,
                     department: student.department_id || selectedCourse.department_id,
                     level: student.level_id || selectedCourse.level_id,
-                    method: isBiometric ? 'Fingerprint' : 'Passcode'
+                    method: method === 'fingerprint' ? 'Fingerprint' : method === 'qr' ? 'QR Code' : 'Passcode'
                 });
 
             setSuccessMatch({
@@ -304,11 +309,14 @@ export default function AttendanceCameraScreen() {
 
             if (result.success) {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                await logAttendanceToBoth(true); // Biometric = true
+                await logAttendanceToBoth('fingerprint'); // Biometric = true
+                return true;
             }
+            return false;
         } catch (error) {
             console.error('Biometric error:', error);
             Alert.alert('Error', 'Biometric authentication failed');
+            return false;
         } finally {
             setIsLoading(false);
         }
@@ -326,14 +334,16 @@ export default function AttendanceCameraScreen() {
         }
 
         // Logic for code verification (lecturer generated or default)
-        if (code !== '1234' && code !== selectedCourse.code.slice(-4)) {
+        const isValid = (code === '1234' || code === selectedCourse.code.slice(-4));
+
+        if (!isValid) {
             Alert.alert('Verification Failed', 'The code you entered is incorrect. Please ask your lecturer for the code.');
             setAttendanceCode(''); // Clear code on failure
             return;
         }
 
         setIsLoading(true);
-        await logAttendanceToBoth(false, code); // Not biometric, pass code
+        await logAttendanceToBoth('passcode', code); // Not biometric, pass code
         setIsLoading(false);
     };
 
@@ -547,6 +557,97 @@ export default function AttendanceCameraScreen() {
         </ReAnimated.View>
     );
 
+    const QRScannerView = () => {
+        const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+        const [scanned, setScanned] = useState(false);
+
+        useEffect(() => {
+            (async () => {
+                const { status } = await BarCodeScanner.requestPermissionsAsync();
+                setHasPermission(status === 'granted');
+            })();
+        }, []);
+
+        const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
+            setScanned(true);
+            if (data === selectedCourse?.code) { // Example: QR code data matches course code
+                Alert.alert('QR Code Matched!', `Scanned: ${data}`);
+                await logAttendanceToBoth('qr', data);
+            } else {
+                Alert.alert('Invalid QR Code', 'The scanned QR code does not match this course.');
+            }
+            // Optionally reset scanned state after a delay to allow re-scanning
+            setTimeout(() => setScanned(false), 2000);
+        };
+
+        if (hasPermission === null) {
+            return (
+                <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
+                    <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
+                    <View style={styles.centerContent}>
+                        <Text style={styles.modeTitle}>Requesting Camera Permission</Text>
+                    </View>
+                </ReAnimated.View>
+            );
+        }
+        if (hasPermission === false) {
+            return (
+                <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
+                    <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
+                    <View style={styles.centerContent}>
+                        <Text style={styles.modeTitle}>No access to camera</Text>
+                        <Text style={styles.modeSubtitle}>Please enable camera permissions in your device settings.</Text>
+                        <TouchableOpacity
+                            style={styles.scanBtn}
+                            onPress={() => setAttendanceMode('activities')}
+                        >
+                            <Text style={styles.scanBtnText}>Go Back</Text>
+                        </TouchableOpacity>
+                    </View>
+                </ReAnimated.View>
+            );
+        }
+
+        return (
+            <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
+                <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
+
+                <TouchableOpacity
+                    style={styles.backButtonAbsolute}
+                    onPress={() => setAttendanceMode('activities')}
+                >
+                    <Ionicons name="chevron-back" size={28} color="#FFF" />
+                </TouchableOpacity>
+
+                <View style={styles.centerContent}>
+                    <Text style={styles.modeTitle}>Scan QR Code</Text>
+                    <Text style={styles.modeSubtitle}>Align the QR code within the frame to mark attendance for {selectedCourse?.name}</Text>
+
+                    <View style={styles.qrScannerContainer}>
+                        <BarCodeScanner
+                            onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
+                            style={StyleSheet.absoluteFillObject}
+                        />
+                        {scanned && (
+                            <View style={styles.qrOverlay}>
+                                <Ionicons name="checkmark-circle" size={80} color="#22C55E" />
+                                <Text style={styles.qrOverlayText}>Scanned!</Text>
+                            </View>
+                        )}
+                    </View>
+
+                    <TouchableOpacity
+                        style={[styles.scanBtn, { marginTop: 20 }]}
+                        onPress={() => setScanned(false)}
+                        disabled={!scanned}
+                    >
+                        <Text style={styles.scanBtnText}>Rescan</Text>
+                    </TouchableOpacity>
+                </View>
+            </ReAnimated.View>
+        );
+    };
+
     const AttendanceMethodsView = () => (
         <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
             <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
@@ -589,6 +690,17 @@ export default function AttendanceCameraScreen() {
                             <Text style={styles.methodTitle}>Session Code</Text>
                             <Text style={styles.methodDesc}>Enter the 4-digit code provided</Text>
                         </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.methodCard, { backgroundColor: 'rgba(255,255,255,0.15)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }]}
+                            onPress={() => setAttendanceMode('qr_scan')}
+                        >
+                            <View style={styles.methodIconWrapper}>
+                                <Ionicons name="qr-code" size={32} color="#FFF" />
+                            </View>
+                            <Text style={styles.methodTitle}>QR Scan</Text>
+                            <Text style={styles.methodDesc}>Scan the code from the Admin</Text>
+                        </TouchableOpacity>
                     </View>
                 </ReAnimated.View>
             </View>
@@ -607,6 +719,8 @@ export default function AttendanceCameraScreen() {
                 <AttendanceMethodsView />
             ) : attendanceMode === 'generate_code' ? (
                 <GenerateCodeView />
+            ) : attendanceMode === 'qr_scan' ? (
+                <QRScannerView />
             ) : attendanceMode === 'courses' ? (
                 <View style={{ flex: 1 }}>
                     <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -1297,6 +1411,7 @@ const styles = StyleSheet.create({
         fontSize: 14,
         color: SLATE_MEDIUM,
         fontWeight: '600',
+        flexShrink: 1,
     },
     infoCircle: {
         width: 44,
@@ -1406,5 +1521,38 @@ const styles = StyleSheet.create({
         height: 60,
         justifyContent: 'center',
         alignItems: 'center',
+    },
+    qrScannerContainer: {
+        width: width * 0.8,
+        aspectRatio: 1,
+        borderRadius: 20,
+        overflow: 'hidden',
+        marginTop: 30,
+        backgroundColor: '#000',
+    },
+    qrOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    qrOverlayText: {
+        color: '#FFF',
+        fontSize: 18,
+        fontWeight: '700',
+        marginTop: 10,
+    },
+    scanBtn: {
+        paddingVertical: 14,
+        paddingHorizontal: 30,
+        backgroundColor: 'rgba(255,255,255,0.2)',
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.3)',
+    },
+    scanBtnText: {
+        color: '#FFF',
+        fontSize: 16,
+        fontWeight: '700',
     },
 });
