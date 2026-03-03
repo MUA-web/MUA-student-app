@@ -61,7 +61,7 @@ export default function SplashScreen() {
                     <View style={styles.logoBackground}>
                         <Ionicons name="shield-checkmark" size={80} color="#FFF" />
                     </View>
-                    <Text style={styles.title}>MBSARARI</Text>
+                    <Text style={styles.title}>Mbature Sarari</Text>
                     <Text style={styles.subtitle}>Smart Attendance System</Text>
                 </Animated.View>
 

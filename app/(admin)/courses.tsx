@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors } from '../../constants/Colors';
 import Card from '../../components/Card';
+import * as Location from 'expo-location';
 import { supabase } from '../../lib/supabase';
 
 export default function CoursesScreen() {
@@ -35,6 +36,46 @@ export default function CoursesScreen() {
             Alert.alert('Error', error.message || 'Failed to fetch courses');
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleSyncLocation = async (course: any) => {
+        try {
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (status !== 'granted') {
+                Alert.alert('Permission Denied', 'Location permission is required to sync coordinates.');
+                return;
+            }
+
+            const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+            const { latitude, longitude } = location.coords;
+
+            Alert.alert(
+                'Confirm Sync',
+                `Update ${course.code} coordinates to your current location?\n\nLat: ${latitude.toFixed(6)}\nLon: ${longitude.toFixed(6)}`,
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Update',
+                        onPress: async () => {
+                            try {
+                                const { error } = await supabase
+                                    .from('courses')
+                                    .update({ latitude, longitude })
+                                    .eq('id', course.id);
+
+                                if (error) throw error;
+                                Alert.alert('Success', 'Course location updated successfully!');
+                                fetchCourses();
+                            } catch (e: any) {
+                                Alert.alert('Error', e.message || 'Failed to update location');
+                            }
+                        }
+                    }
+                ]
+            );
+        } catch (e: any) {
+            Alert.alert('Error', 'Could not get current location.');
         }
     };
 
@@ -110,12 +151,21 @@ export default function CoursesScreen() {
                                     </View>
                                     <Text style={styles.levelText}>{item.levels?.label || 'No Level'}</Text>
                                 </View>
-                                <TouchableOpacity
-                                    style={styles.deleteBtn}
-                                    onPress={() => handleDelete(item.id)}
-                                >
-                                    <Ionicons name="trash-outline" size={20} color={Colors.danger} />
-                                </TouchableOpacity>
+                                <View style={styles.actionRow}>
+                                    <TouchableOpacity
+                                        style={styles.syncBtn}
+                                        onPress={() => handleSyncLocation(item)}
+                                    >
+                                        <Ionicons name="location-outline" size={18} color="#2563EB" />
+                                        <Text style={styles.syncBtnText}>Sync Location</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={styles.deleteBtn}
+                                        onPress={() => handleDelete(item.id)}
+                                    >
+                                        <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                                    </TouchableOpacity>
+                                </View>
                             </Card>
                         )}
                         ListEmptyComponent={
@@ -193,5 +243,26 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 12,
     },
-    addBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' }
+    addBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+    actionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    syncBtn: {
+        backgroundColor: '#EFF6FF',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+    },
+    syncBtnText: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#2563EB',
+    },
 });

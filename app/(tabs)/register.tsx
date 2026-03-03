@@ -21,9 +21,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BarCodeScanner } from 'expo-barcode-scanner';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
+import ConfettiCannon from 'react-native-confetti-cannon';
 import { Colors } from '../../constants/Colors';
 import Card from '../../components/Card';
 import { supabase } from '../../lib/supabase';
@@ -48,7 +50,18 @@ export default function AttendanceMarkingScreen() {
     const [selectedCourse, setSelectedCourse] = useState<any>(null);
     const [courses, setCourses] = useState<any[]>([]);
     const [isPasscodeModalVisible, setIsPasscodeModalVisible] = useState(false);
+    const [scanned, setScanned] = useState(false);
+    const [isQRScannerVisible, setIsQRScannerVisible] = useState(false);
+    const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+
     const [todayAttendance, setTodayAttendance] = useState<any[]>([]);
+    const [showCelebration, setShowCelebration] = useState(false);
+    const [celebrationDetails, setCelebrationDetails] = useState({
+        courseName: '',
+        courseCode: '',
+        time: '',
+        method: ''
+    });
     const [unreadCount, setUnreadCount] = useState(0);
     const [locationGranted, setLocationGranted] = useState<boolean | null>(null); // null = checking
 
@@ -226,6 +239,61 @@ export default function AttendanceMarkingScreen() {
         return R * c; // Distance in meters
     };
 
+    const fetchCoursesForFilter = async (deptId: string | null, lvlId: string | null, deptName: string, lvlLabel: string, regNo: string) => {
+        try {
+            // Fetch courses matching student's department and level
+            let query = supabase.from('courses').select('*, departments!inner(name), levels!inner(label)');
+
+            if (deptId && lvlId) {
+                query = query.eq('department_id', deptId)
+                    .eq('level_id', lvlId);
+            } else {
+                // Fallback for legacy data or metadata-only profiles
+                console.warn('Using name-based filtering for courses.');
+                query = query.eq('departments.name', deptName)
+                    .eq('levels.label', lvlLabel);
+            }
+
+            const { data: coursesData, error: coursesError } = await query;
+
+            if (coursesError) {
+                console.error('Error fetching courses:', coursesError);
+            }
+
+            setCourses(coursesData || []);
+
+            if (coursesData && coursesData.length > 0) {
+                // AUTO-SELECT active course
+                const activeCourse = coursesData.find(c => {
+                    const check = isWithinSchedule(c.session_day, c.session_time, c.duration);
+                    return check.valid;
+                });
+
+                if (activeCourse) {
+                    setSelectedCourse(activeCourse);
+                } else {
+                    // Default to first if none active
+                    setSelectedCourse(coursesData[0]);
+                }
+            } else {
+                setSelectedCourse(null);
+                setGeneratedCode('');
+            }
+
+            // 3. Fetch today's attendance to prevent duplicates
+            const today = new Date().toISOString().split('T')[0];
+            const { data: attData } = await supabase
+                .from('attendance')
+                .select('course_code')
+                .eq('registration_number', regNo)
+                .eq('date', today);
+
+            setTodayAttendance(attData || []);
+        } catch (e) {
+            console.error('Error in fetchCoursesForFilter:', e);
+        }
+    };
+
     const fetchProfileAndCourses = async () => {
         setIsLoadingProfile(true);
         try {
@@ -236,7 +304,7 @@ export default function AttendanceMarkingScreen() {
                     .from('students')
                     .select('*')
                     .eq('id', session.user.id)
-                    .single();
+                    .maybeSingle();
 
                 if (student) {
                     setFullName(student.full_name);
@@ -246,59 +314,20 @@ export default function AttendanceMarkingScreen() {
                     setDepartmentName(student.department || '');
                     setLevelLabel(student.level || '');
 
-                    // Fetch courses matching student's department and level
-                    // Combine ID-based and name-based filtering for maximum compatibility
-                    let query = supabase.from('courses').select('*, departments!inner(name), levels!inner(label)');
+                    // Proceed with student object
+                    await fetchCoursesForFilter(student.department_id, student.level_id, student.department, student.level, student.registration_number);
+                } else if (session.user.user_metadata) {
+                    console.log('Student record not found in table, using metadata fallback.');
+                    const meta = session.user.user_metadata;
+                    setFullName(meta.full_name || meta.name || '');
+                    setRegNumber(meta.reg_no || '');
+                    setDepartmentName(meta.department || '');
+                    setLevelLabel(meta.level || '');
 
-                    if (student.department_id && student.level_id) {
-                        query = query.eq('department_id', student.department_id)
-                            .eq('level_id', student.level_id);
-                    } else {
-                        // Fallback for legacy data - filter by the names in student profile
-                        console.warn('Student profile missing IDs, using name-based filtering fallback.');
-                        query = query.eq('departments.name', student.department)
-                            .eq('levels.label', student.level);
-                    }
-
-                    const { data: coursesData, error: coursesError } = await query;
-
-                    if (coursesError) {
-                        console.error('Error fetching courses:', coursesError);
-                    }
-
-                    setCourses(coursesData || []);
-
-                    if (coursesData && coursesData.length > 0) {
-                        // AUTO-SELECT active course
-                        const activeCourse = coursesData.find(c => {
-                            const check = isWithinSchedule(c.session_day, c.session_time, c.duration);
-                            return check.valid;
-                        });
-
-                        if (activeCourse) {
-                            setSelectedCourse(activeCourse);
-                            generateDailyCodeForCourse(activeCourse.code);
-                        } else {
-                            // Default to first if none active
-                            setSelectedCourse(coursesData[0]);
-                            generateDailyCodeForCourse(coursesData[0].code);
-                        }
-                    } else {
-                        setSelectedCourse(null);
-                        setGeneratedCode('');
-                    }
-
-                    // 3. Fetch today's attendance for this student to prevent duplicates
-                    const today = new Date().toISOString().split('T')[0];
-                    const { data: attData } = await supabase
-                        .from('attendance')
-                        .select('course_code')
-                        .eq('registration_number', student.registration_number)
-                        .eq('date', today);
-
-                    setTodayAttendance(attData || []);
+                    // Fetch courses using names from metadata
+                    await fetchCoursesForFilter(null, null, meta.department, meta.level, meta.reg_no);
                 } else {
-                    console.log('Student profile not found for ID:', session.user.id);
+                    console.log('No student profile or metadata found for ID:', session.user.id);
                 }
             }
         } catch (error) {
@@ -351,6 +380,8 @@ export default function AttendanceMarkingScreen() {
             Alert.alert('Error', 'No course selected.');
             return;
         }
+
+        setIsSaving(true); // Ensure saving state is set
 
         try {
             const { data: { user } } = await supabase.auth.getUser();
@@ -417,19 +448,32 @@ export default function AttendanceMarkingScreen() {
                     selectedCourse.longitude
                 );
 
-                const allowedRadius = selectedCourse.radius_meters || 100; // Default to 100m for better consistency
+                const allowedRadius = selectedCourse.radius_meters || 300; // Increased to 300m for better consistency
 
                 if (distanceMeters > allowedRadius) {
-                    const isVeryFar = distanceMeters > 500;
                     Alert.alert(
                         'Out of Range',
-                        `You are approximately ${Math.round(distanceMeters)}m away from the class location. You must be within ${allowedRadius}m to mark attendance.` +
-                        (isVeryFar ? '\n\nIf you are actually in class, the class location might be set incorrectly. Ask your admin to check the active coordinates.' : '')
+                        `You are approximately ${Math.round(distanceMeters)}m away from the class location. You must be within ${allowedRadius}m to mark attendance.\n\n` +
+                        'If you are actually in class, the class location might be inaccurate. Please ask your Admin to "Sync Location" for this course.'
                     );
                     return;
                 }
             }
             // ------------------------
+
+            await finalizeAttendance(isBiometric, code);
+        } catch (error: any) {
+            console.error('Attendance logging error:', error);
+            Alert.alert('Error', error.message || 'Failed to mark attendance.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const finalizeAttendance = async (isBiometric: boolean, code?: string) => {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('User session lost.');
 
             const method = isBiometric ? 'Self (Fingerprint)' : `Self (Code: ${code})`;
 
@@ -460,15 +504,29 @@ export default function AttendanceMarkingScreen() {
 
             if (attError) throw attError;
 
-            // Update local state immediately so UI reflects the change without a refetch
-            setTodayAttendance(prev => [...prev, { course_code: selectedCourse.code }]);
+            // 1. Close input modals and clear inputs IMMEDIATELY
+            setIsPasscodeModalVisible(false);
+            setIsQRScannerVisible(false);
+            setIsScanning(false);
+            setAttendanceCode('');
+            setIsSaving(false);
 
+            // 2. Prepare celebration details
+            setCelebrationDetails({
+                courseName: selectedCourse.name,
+                courseCode: selectedCourse.code,
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                method: method
+            });
+
+            // 3. Trigger celebration modal
+            setShowCelebration(true);
             setIsSuccess(true);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+            // Auto-hide the success banner on main screen after 3s (celebration stays until dismissed)
             setTimeout(() => {
                 setIsSuccess(false);
-                setAttendanceCode('');
-                setIsPasscodeModalVisible(false);
             }, 3000);
         } catch (error: any) {
             console.error('Attendance logging error:', error);
@@ -557,6 +615,43 @@ export default function AttendanceMarkingScreen() {
         }
     };
 
+
+    const handleQRScanPress = async () => {
+        if (!selectedCourse) {
+            Alert.alert('Course Required', 'Please select a course first');
+            return;
+        }
+        if (todayAttendance.some(a => a.course_code === selectedCourse?.code)) {
+            Alert.alert('Already Marked', 'You have already marked attendance for this course today.');
+            return;
+        }
+
+        const { status } = await BarCodeScanner.requestPermissionsAsync();
+        setHasCameraPermission(status === 'granted');
+
+        if (status === 'granted') {
+            setIsQRScannerVisible(true);
+            setScanned(false);
+        } else {
+            Alert.alert('Permission Denied', 'Camera permission is required to scan QR codes.');
+        }
+    };
+
+    const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
+        setScanned(true);
+        // Lecturer QR code usually contains the course code
+        if (data === selectedCourse?.code || data === selectedCourse?.id) {
+            setIsQRScannerVisible(false);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await logAttendanceToBoth(false, 'QR-SCAN');
+        } else {
+            Alert.alert(
+                'Invalid QR Code',
+                'The scanned QR code does not match this course.',
+                [{ text: 'OK', onPress: () => setScanned(false) }]
+            );
+        }
+    };
 
     return (
         <View style={styles.baseContainer}>
@@ -743,6 +838,30 @@ export default function AttendanceMarkingScreen() {
                                     <Ionicons name="chevron-forward" size={20} color={isAlreadyMarked ? '#CBD5E1' : '#64748B'} />
                                 </View>
                             </TouchableOpacity>
+
+                            <Text style={[styles.modernSectionTitle, { marginTop: 24 }]}>4. QR Code Scanning</Text>
+                            <Text style={styles.modernProgSub}>Scan the code from the Admin/Lecturer</Text>
+
+                            <TouchableOpacity
+                                style={[
+                                    styles.modernCourseCard,
+                                    { marginTop: 16, backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
+                                    (todayAttendance.some(a => a.course_code === selectedCourse?.code)) && { opacity: 0.6 }
+                                ]}
+                                onPress={handleQRScanPress}
+                                disabled={isSaving || isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)}
+                            >
+                                <View style={styles.modernCourseRow}>
+                                    <View style={[styles.modernCourseIconBox, { backgroundColor: isAlreadyMarked ? '#F1F5F9' : '#DCFCE7' }]}>
+                                        <Ionicons name="qr-code" size={24} color={isAlreadyMarked ? '#94A3B8' : '#16A34A'} />
+                                    </View>
+                                    <View style={[styles.modernCourseInfo, { flex: 1 }]}>
+                                        <Text style={[styles.infoLabel, { color: isAlreadyMarked ? '#94A3B8' : '#16A34A' }]}>QR SCANNER</Text>
+                                        <Text style={[styles.modernCourseName, { fontSize: 16 }, isAlreadyMarked && { color: '#94A3B8' }]}>Scan Class QR</Text>
+                                    </View>
+                                    <Ionicons name="camera-outline" size={20} color={isAlreadyMarked ? '#CBD5E1' : '#16A34A'} />
+                                </View>
+                            </TouchableOpacity>
                         </View>
                     </View>
 
@@ -851,6 +970,110 @@ export default function AttendanceMarkingScreen() {
                         </View>
                     </Pressable>
                 </Pressable>
+            </Modal>
+
+            {/* QR Scanner Modal */}
+            <Modal
+                animationType="slide"
+                transparent={false}
+                visible={isQRScannerVisible}
+                onRequestClose={() => setIsQRScannerVisible(false)}
+            >
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+                    <View style={styles.qrScannerHeader}>
+                        <TouchableOpacity
+                            onPress={() => setIsQRScannerVisible(false)}
+                            style={styles.qrCloseBtn}
+                        >
+                            <Ionicons name="close" size={28} color="#FFF" />
+                        </TouchableOpacity>
+                        <Text style={styles.qrHeaderText}>Scan Attendance QR</Text>
+                        <View style={{ width: 44 }} />
+                    </View>
+
+                    <View style={styles.qrScannerContainer}>
+                        <BarCodeScanner
+                            onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
+                            style={StyleSheet.absoluteFillObject}
+                        />
+                        <View style={styles.scannerOverlay}>
+                            <View style={styles.scannerTarget} />
+                        </View>
+                    </View>
+
+                    <View style={styles.qrScannerFooter}>
+                        <Text style={styles.qrGuideText}>
+                            Align the QR code within the frame to automatically mark attendance.
+                        </Text>
+                    </View>
+                </SafeAreaView>
+            </Modal>
+
+            {/* Success Celebration Modal */}
+            <Modal
+                animationType="fade"
+                transparent={false}
+                visible={showCelebration}
+                onRequestClose={() => setShowCelebration(false)}
+            >
+                <View style={styles.celebrationContainer}>
+                    <LinearGradient colors={['#0F172A', '#1E293B']} style={StyleSheet.absoluteFill} />
+
+                    <ConfettiCannon
+                        count={200}
+                        origin={{ x: width / 2, y: -20 }}
+                        fadeOut={true}
+                        fallSpeed={3000}
+                    />
+
+                    <View style={styles.celebrationContent}>
+                        <View style={styles.checkCelebrateOutline3}>
+                            <View style={styles.checkCelebrateOutline2}>
+                                <View style={styles.checkCelebrateOutline1}>
+                                    <View style={styles.checkCelebrateCircle}>
+                                        <Ionicons name="checkmark" size={56} color="#FFF" />
+                                    </View>
+                                </View>
+                            </View>
+                        </View>
+
+                        <Text style={styles.celebrateTitle}>Attendance Recorded!</Text>
+                        <Text style={styles.celebrateSubtitle}>
+                            Your presence has been securely logged for:
+                        </Text>
+
+                        <View style={styles.courseSummaryCard}>
+                            <Text style={styles.summaryCode}>{celebrationDetails.courseCode}</Text>
+                            <Text style={styles.summaryName}>{celebrationDetails.courseName}</Text>
+                            <View style={styles.summaryDivider} />
+                            <View style={styles.summaryRow}>
+                                <View style={styles.summaryItem}>
+                                    <Ionicons name="time-outline" size={16} color="#94A3B8" />
+                                    <Text style={styles.summaryText}>{celebrationDetails.time}</Text>
+                                </View>
+                                <View style={styles.summaryItem}>
+                                    <Ionicons name="shield-checkmark-outline" size={16} color="#22C55E" />
+                                    <Text style={[styles.summaryText, { color: '#22C55E' }]}>Verified</Text>
+                                </View>
+                            </View>
+                        </View>
+
+                        <TouchableOpacity
+                            style={styles.celebrateCloseBtn}
+                            onPress={() => {
+                                setShowCelebration(false);
+                                setIsSuccess(false);
+                            }}
+                        >
+                            <LinearGradient
+                                colors={['#2563EB', '#1D4ED8']}
+                                style={styles.celebrateBtnGradient}
+                            >
+                                <Text style={styles.celebrateBtnText}>Back to Dashboard</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
+                    </View>
+                </View>
             </Modal>
 
             {/* === CUSTOM BIOMETRIC SCANNING OVERLAY === */}
@@ -1505,4 +1728,126 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         letterSpacing: 0.5,
     },
+
+    // QR Scanner Styles
+    qrScannerHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        height: 60,
+        backgroundColor: '#000',
+    },
+    qrCloseBtn: {
+        width: 44,
+        height: 44,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    qrHeaderText: {
+        color: '#FFF',
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    qrScannerContainer: {
+        flex: 1,
+        backgroundColor: '#000',
+    },
+    scannerOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    scannerTarget: {
+        width: 250,
+        height: 250,
+        borderWidth: 2,
+        borderColor: '#22C55E',
+        backgroundColor: 'transparent',
+        borderRadius: 20,
+    },
+    qrScannerFooter: {
+        padding: 40,
+        backgroundColor: '#000',
+        alignItems: 'center',
+    },
+    qrGuideText: {
+        color: 'rgba(255,255,255,0.7)',
+        textAlign: 'center',
+        fontSize: 14,
+        lineHeight: 20,
+    },
+
+    // Celebration Screen Styles
+    celebrationContainer: { flex: 1 },
+    celebrationContent: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
+    checkCelebrateOutline3: {
+        width: 180,
+        height: 180,
+        borderRadius: 90,
+        backgroundColor: 'rgba(34, 197, 94, 0.05)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 40,
+    },
+    checkCelebrateOutline2: {
+        width: 150,
+        height: 150,
+        borderRadius: 75,
+        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    checkCelebrateOutline1: {
+        width: 120,
+        height: 120,
+        borderRadius: 60,
+        backgroundColor: 'rgba(34, 197, 94, 0.2)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    checkCelebrateCircle: {
+        width: 84,
+        height: 84,
+        borderRadius: 42,
+        backgroundColor: '#22C55E',
+        justifyContent: 'center',
+        alignItems: 'center',
+        elevation: 12,
+        shadowColor: '#22C55E',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.4,
+        shadowRadius: 12,
+    },
+    celebrateTitle: { fontSize: 32, fontWeight: '900', color: '#FFF', textAlign: 'center', marginBottom: 12 },
+    celebrateSubtitle: { fontSize: 15, color: '#94A3B8', textAlign: 'center', marginBottom: 32, fontWeight: '500' },
+    courseSummaryCard: {
+        width: '100%',
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        borderRadius: 24,
+        padding: 24,
+        alignItems: 'center',
+        marginBottom: 48,
+    },
+    summaryCode: { fontSize: 13, fontWeight: '800', color: '#2563EB', textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 4 },
+    summaryName: { fontSize: 20, fontWeight: '700', color: '#FFF', textAlign: 'center' },
+    summaryDivider: { width: 40, height: 2, backgroundColor: '#1E293B', marginVertical: 16, borderRadius: 1 },
+    summaryRow: { flexDirection: 'row', gap: 24 },
+    summaryItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    summaryText: { fontSize: 14, fontWeight: '700', color: '#94A3B8' },
+    celebrateCloseBtn: {
+        width: '100%',
+        height: 64,
+        borderRadius: 20,
+        overflow: 'hidden',
+    },
+    celebrateBtnGradient: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    celebrateBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
 });

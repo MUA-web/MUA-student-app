@@ -47,6 +47,7 @@ export default function Dashboard() {
     });
     const [recentAttendance, setRecentAttendance] = useState<any[]>([]);
     const [studentCourses, setStudentCourses] = useState<any[]>([]);
+    const [studentBooks, setStudentBooks] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [unreadCount, setUnreadCount] = useState(0);
 
@@ -122,26 +123,62 @@ export default function Dashboard() {
                 setRecentAttendance(dailyAttendance.slice(0, 5));
             } else {
                 // Student stats
-                const regNo = profile?.reg_no;
-                const deptName = profile?.department;
-                const levelLabel = profile?.level;
+                let regNo = profile?.reg_no;
+                let deptName = profile?.department;
+                let levelLabel = profile?.level;
+                let deptId = null;
+                let lvlId = null;
+
+                // 1. Try to get student record for better IDs
+                try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session?.user) {
+                        const { data: student } = await supabase
+                            .from('students')
+                            .select('*')
+                            .eq('id', session.user.id)
+                            .maybeSingle();
+
+                        if (student) {
+                            regNo = student.registration_number;
+                            deptName = student.department || deptName;
+                            levelLabel = student.level || levelLabel;
+                            deptId = student.department_id;
+                            lvlId = student.level_id;
+                        }
+                    }
+                } catch (err) {
+                    console.log('Error fetching student record, using metadata:', err);
+                }
 
                 if (regNo) {
                     try {
-                        const [attResult, coursesResult] = await Promise.all([
+                        // 2. Fetch courses with optimized ID filtering + logic join fallback
+                        let coursesQuery = supabase.from('courses').select('*, departments!inner(name), levels!inner(label)');
+                        if (deptId && lvlId) {
+                            coursesQuery = coursesQuery.eq('department_id', deptId).eq('level_id', lvlId);
+                        } else {
+                            coursesQuery = coursesQuery.eq('departments.name', deptName).eq('levels.label', levelLabel);
+                        }
+
+                        // 3. Fetch books with similar logic
+                        let booksQuery = supabase.from('books').select('*');
+                        if (deptName && levelLabel) {
+                            booksQuery = booksQuery.eq('department', deptName).eq('level', levelLabel);
+                        }
+
+                        const [attResult, coursesResult, booksResult] = await Promise.all([
                             supabase
                                 .from('attendance')
                                 .select('*')
                                 .eq('registration_number', regNo),
-                            supabase
-                                .from('courses')
-                                .select('*, departments!inner(name), levels!inner(label)')
-                                .eq('departments.name', deptName)
-                                .eq('levels.label', levelLabel)
+                            coursesQuery,
+                            booksQuery
                         ]);
 
                         const attendanceRecords = attResult.data || [];
                         const allCourses = coursesResult.data || [];
+                        const allBooks = booksResult.data || [];
 
                         // Map courses with their specific attendance count
                         const enrichedCourses = allCourses.map(course => {
@@ -154,6 +191,7 @@ export default function Dashboard() {
                         });
 
                         setStudentCourses(enrichedCourses);
+                        setStudentBooks(allBooks);
                         fetchUnreadCount();
 
                         const totalAttended = attendanceRecords.length;
@@ -164,7 +202,7 @@ export default function Dashboard() {
                             personalRate: Math.min(100, Math.round((totalAttended / totalSessionsSum) * 100))
                         }));
                     } catch (e) {
-                        console.error('Error fetching student attendance:', e);
+                        console.error('Error fetching student attendance details:', e);
                     }
                 }
             }
@@ -575,11 +613,13 @@ export default function Dashboard() {
                         );
                     })
                 ) : (
-                    <View style={styles.modernEmptyState}>
-                        <Ionicons name="file-tray-outline" size={48} color="#CBD5E1" />
-                        <Text style={styles.modernEmptyText}>No enrolled courses found.</Text>
+                    <View style={[styles.modernEmptyState, { marginVertical: 12 }]}>
+                        <Ionicons name="school-outline" size={40} color="#CBD5E1" />
+                        <Text style={styles.modernEmptyText}>No courses assigned to your level.</Text>
                     </View>
                 )}
+
+                {renderBooksSection()}
             </View>
 
             {/* Quick Action FAB for quick attendance */}
@@ -595,7 +635,43 @@ export default function Dashboard() {
                     <Ionicons name="finger-print" size={28} color="#FFF" />
                 </LinearGradient>
             </TouchableOpacity>
-        </View>
+        </View >
+    );
+
+    const renderBooksSection = () => (
+        <>
+            <View style={[styles.overviewHeader, { marginTop: 24 }]}>
+                <Text style={styles.modernSectionTitle}>Study Materials</Text>
+                <Text style={styles.overviewSub}>{studentBooks.length} available</Text>
+            </View>
+
+            {studentBooks.length > 0 ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 10, gap: 16 }}>
+                    {studentBooks.map((book, index) => (
+                        <View key={index} style={styles.bookMaterialCard}>
+                            <View style={styles.bookIconHeader}>
+                                <Ionicons name="book-outline" size={32} color={BLUE_PRIMARY} />
+                                <View style={styles.bookBadge}>
+                                    <Text style={styles.bookBadgeText}>NEW</Text>
+                                </View>
+                            </View>
+                            <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
+                            <View style={styles.bookFooter}>
+                                <Text style={styles.bookPrice}>₦{book.price.toLocaleString()}</Text>
+                                <TouchableOpacity style={styles.bookActionBtn}>
+                                    <Text style={styles.bookActionText}>View Details</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    ))}
+                </ScrollView>
+            ) : (
+                <View style={[styles.modernEmptyState, { marginVertical: 12 }]}>
+                    <Ionicons name="library-outline" size={40} color="#CBD5E1" />
+                    <Text style={styles.modernEmptyText}>No study materials found for your level.</Text>
+                </View>
+            )}
+        </>
     );
 
     return (
@@ -1393,7 +1469,6 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         lineHeight: 20,
     },
-    // Reference-based Styles
     referenceHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -1405,6 +1480,66 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,
+    },
+    bookMaterialCard: {
+        width: 170,
+        backgroundColor: '#FFF',
+        borderRadius: 24,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05,
+        shadowRadius: 10,
+        elevation: 2,
+    },
+    bookIconHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: 12,
+    },
+    bookBadge: {
+        backgroundColor: '#ECFDF5',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 6,
+    },
+    bookBadgeText: {
+        fontSize: 8,
+        fontWeight: '900',
+        color: '#059669',
+    },
+    bookTitle: {
+        fontSize: 14,
+        fontWeight: '800',
+        color: '#1E293B',
+        lineHeight: 18,
+        height: 36,
+        marginBottom: 12,
+    },
+    bookFooter: {
+        marginTop: 'auto',
+    },
+    bookPrice: {
+        fontSize: 16,
+        fontWeight: '900',
+        color: BLUE_PRIMARY,
+        marginBottom: 8,
+    },
+    bookActionBtn: {
+        backgroundColor: '#F8FAFC',
+        paddingVertical: 8,
+        borderRadius: 10,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+    },
+    bookActionText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#64748B',
     },
     refAvatar: {
         width: 48,

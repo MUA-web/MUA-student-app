@@ -98,7 +98,7 @@ export default function OnboardingScreen() {
                     <View style={styles.brandIconBox}>
                         <Ionicons name="shield-checkmark" size={22} color="#FFF" />
                     </View>
-                    <Text style={styles.brandName}>mbsarari</Text>
+                    <Text style={styles.brandName}>Mbature Sarari</Text>
                 </View>
 
                 <TouchableOpacity
