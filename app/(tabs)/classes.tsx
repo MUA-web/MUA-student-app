@@ -1542,7 +1542,7 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         marginTop: 10,
     },
-    scanBtn: {
+    qrScanBtn: {
         paddingVertical: 14,
         paddingHorizontal: 30,
         backgroundColor: 'rgba(255,255,255,0.2)',
@@ -1550,7 +1550,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: 'rgba(255,255,255,0.3)',
     },
-    scanBtnText: {
+    qrScanBtnText: {
         color: '#FFF',
         fontSize: 16,
         fontWeight: '700',

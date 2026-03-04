@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { BarCodeScanner } from 'expo-barcode-scanner';
+import { CameraView, Camera } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
@@ -626,7 +626,7 @@ export default function AttendanceMarkingScreen() {
             return;
         }
 
-        const { status } = await BarCodeScanner.requestPermissionsAsync();
+        const { status } = await Camera.requestCameraPermissionsAsync();
         setHasCameraPermission(status === 'granted');
 
         if (status === 'granted') {
@@ -639,8 +639,22 @@ export default function AttendanceMarkingScreen() {
 
     const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
         setScanned(true);
-        // Lecturer QR code usually contains the course code
-        if (data === selectedCourse?.code || data === selectedCourse?.id) {
+        let isValid = false;
+
+        try {
+            // Try to parse as JSON (new format from admin dashboard)
+            const qrData = JSON.parse(data);
+            if (qrData.type === 'attendance_qr' && (qrData.courseId === selectedCourse?.id || qrData.courseCode === selectedCourse?.code)) {
+                isValid = true;
+            }
+        } catch (e) {
+            // Fallback: check if data is plain course code or ID
+            if (data === selectedCourse?.code || data === selectedCourse?.id) {
+                isValid = true;
+            }
+        }
+
+        if (isValid) {
             setIsQRScannerVisible(false);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             await logAttendanceToBoth(false, 'QR-SCAN');
@@ -992,13 +1006,30 @@ export default function AttendanceMarkingScreen() {
                     </View>
 
                     <View style={styles.qrScannerContainer}>
-                        <BarCodeScanner
-                            onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
-                            style={StyleSheet.absoluteFillObject}
-                        />
-                        <View style={styles.scannerOverlay}>
-                            <View style={styles.scannerTarget} />
-                        </View>
+                        {hasCameraPermission === false ? (
+                            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+                                <Ionicons name="alert-circle" size={64} color="#DC2626" />
+                                <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '700', marginTop: 16, textAlign: 'center' }}>
+                                    Camera Access Denied
+                                </Text>
+                                <Text style={{ color: '#94A3B8', fontSize: 14, marginTop: 8, textAlign: 'center' }}>
+                                    Please enable camera permissions in your device settings to scan QR codes.
+                                </Text>
+                            </View>
+                        ) : (
+                            <>
+                                <CameraView
+                                    onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+                                    barcodeScannerSettings={{
+                                        barcodeTypes: ['qr'],
+                                    }}
+                                    style={StyleSheet.absoluteFillObject}
+                                />
+                                <View style={styles.scannerOverlay}>
+                                    <View style={styles.scannerTarget} />
+                                </View>
+                            </>
+                        )}
                     </View>
 
                     <View style={styles.qrScannerFooter}>

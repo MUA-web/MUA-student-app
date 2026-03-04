@@ -28,7 +28,8 @@
       "package": "com.muaweb.facialrecognition",
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA"
       ]
     },
     "web": {
@@ -56,6 +57,12 @@
           "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to verify your presence in class for attendance marking.",
           "isIosBackgroundLocationEnabled": false,
           "isAndroidBackgroundLocationEnabled": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan QR codes for attendance."
         }
       ],
       "expo-barcode-scanner"

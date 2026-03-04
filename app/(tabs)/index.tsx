@@ -473,10 +473,24 @@ export default function Dashboard() {
                                 <Text style={styles.refName}>{userName || 'Student'}</Text>
                             </View>
                         </View>
-                        <TouchableOpacity style={styles.refNotificationBtn}>
-                            <View style={styles.refNotificationDot} />
-                            <Ionicons name="notifications-outline" size={24} color={SLATE_DARK} />
-                        </TouchableOpacity>
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <TouchableOpacity
+                                onPress={() => router.push('/(tabs)/notifications')}
+                                style={styles.refNotificationBtn}
+                            >
+                                <View style={styles.refNotificationDot} />
+                                <Ionicons name="notifications-outline" size={24} color={SLATE_DARK} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                onPress={async () => {
+                                    await supabase.auth.signOut();
+                                    router.replace('/(auth)/login');
+                                }}
+                                style={[styles.refNotificationBtn, { backgroundColor: '#FEF2F2' }]}
+                            >
+                                <Ionicons name="log-out-outline" size={24} color="#DC2626" />
+                            </TouchableOpacity>
+                        </View>
                     </View>
 
                     {/* Hero Progress Card */}
