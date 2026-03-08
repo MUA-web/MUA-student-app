@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { CameraView, Camera } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
 
@@ -50,7 +50,7 @@ export default function AttendanceMarkingScreen() {
     const [isPasscodeModalVisible, setIsPasscodeModalVisible] = useState(false);
     const [scanned, setScanned] = useState(false);
     const [isQRScannerVisible, setIsQRScannerVisible] = useState(false);
-    const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
+    const [permission, requestPermission] = useCameraPermissions();
 
     const [todayAttendance, setTodayAttendance] = useState<any[]>([]);
     const [showCelebration, setShowCelebration] = useState(false);
@@ -529,10 +529,12 @@ export default function AttendanceMarkingScreen() {
             return;
         }
 
-        const { status } = await Camera.requestCameraPermissionsAsync();
-        setHasCameraPermission(status === 'granted');
+        let currentPermission = permission;
+        if (!currentPermission?.granted) {
+            currentPermission = await requestPermission();
+        }
 
-        if (status === 'granted') {
+        if (currentPermission?.granted) {
             setIsQRScannerVisible(true);
             setScanned(false);
         } else {
@@ -763,7 +765,7 @@ export default function AttendanceMarkingScreen() {
                     </View>
 
                     <View style={styles.qrScannerContainer}>
-                        {hasCameraPermission === false ? (
+                        {!permission?.granted ? (
                             <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
                                 <Ionicons name="alert-circle" size={64} color="#DC2626" />
                                 <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '700', marginTop: 16, textAlign: 'center' }}>
