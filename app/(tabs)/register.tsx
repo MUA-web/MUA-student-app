@@ -327,44 +327,37 @@ export default function AttendanceMarkingScreen() {
 
     const isAlreadyMarked = todayAttendance.some(a => a.course_code === selectedCourse?.code);
 
-    const logAttendanceToBoth = async (isBiometric: boolean, code?: string) => {
+    const logAttendanceToBoth = async (method: 'Fingerprint' | 'Passcode' | 'QR-Scan', code?: string) => {
         if (!selectedCourse) {
             Alert.alert('Error', 'No course selected.');
             return;
         }
 
-        setIsSaving(true); // Ensure saving state is set
+        setIsSaving(true);
 
         try {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error('You must be logged in to mark attendance.');
 
-            // --- Daily Limit Check ---
+            // --- Consolidated Checks ---
             const alreadyMarked = todayAttendance.some(a => a.course_code === selectedCourse?.code);
             if (alreadyMarked) {
                 Alert.alert('Already Marked', 'You have already marked attendance for this course today.');
                 return;
             }
-            // -------------------------
 
-            // --- Schedule Check ---
             const scheduleCheck = isWithinSchedule(
                 selectedCourse.session_day,
                 selectedCourse.session_time,
                 selectedCourse.duration
             );
             if (!scheduleCheck.valid) {
-                Alert.alert(
-                    'No Active Session',
-                    scheduleCheck.reason || 'There is no scheduled class for this course right now.'
-                );
+                Alert.alert('No Active Session', scheduleCheck.reason);
                 return;
             }
-            // ----------------------
+            // ---------------------------
 
-
-
-            await finalizeAttendance(isBiometric, code);
+            await finalizeAttendance(method, code);
         } catch (error: any) {
             console.error('Attendance logging error:', error);
             Alert.alert('Error', error.message || 'Failed to mark attendance.');
@@ -373,12 +366,12 @@ export default function AttendanceMarkingScreen() {
         }
     };
 
-    const finalizeAttendance = async (isBiometric: boolean, code?: string) => {
+    const finalizeAttendance = async (method: 'Fingerprint' | 'Passcode' | 'QR-Scan', code?: string) => {
         try {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error('User session lost.');
 
-            const method = isBiometric ? 'Self (Fingerprint)' : `Self (Code: ${code})`;
+            const markedByLabel = `Self (${method}${code ? ': ' + code : ''})`;
 
             // 1. Log to attendance_logs (Supabase Direct)
             const { error: logError } = await supabase
@@ -387,7 +380,7 @@ export default function AttendanceMarkingScreen() {
                     student_id: user.id,
                     course_id: selectedCourse.id,
                     status: 'Present',
-                    marked_by: method,
+                    marked_by: markedByLabel,
                     timestamp: new Date().toISOString(),
                 });
             if (logError) throw logError;
@@ -400,12 +393,16 @@ export default function AttendanceMarkingScreen() {
                     date: new Date().toISOString().split('T')[0],
                     course_code: selectedCourse.code,
                     registration_number: regNumber,
-                    department: departmentName, // Use text name, not UUID
-                    level: levelLabel,          // Use text label, not UUID
-                    method: isBiometric ? 'Fingerprint' : 'Passcode'
+                    department: departmentName,
+                    level: levelLabel,
+                    method: method // Correctly logs 'Fingerprint', 'Passcode', or 'QR-Scan'
                 });
 
             if (attError) throw attError;
+
+            // --- IMMEDIATE STATE UPDATE TO PREVENT DUPLICATES ---
+            setTodayAttendance(prev => [...prev, { course_code: selectedCourse.code }]);
+            // ----------------------------------------------------
 
             // 1. Close input modals and clear inputs IMMEDIATELY
             setIsPasscodeModalVisible(false);
@@ -419,7 +416,7 @@ export default function AttendanceMarkingScreen() {
                 courseName: selectedCourse.name,
                 courseCode: selectedCourse.code,
                 time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                method: method
+                method: markedByLabel
             });
 
             // 3. Trigger celebration modal
@@ -457,6 +454,28 @@ export default function AttendanceMarkingScreen() {
     };
 
     const handleFingerprintAttendance = async () => {
+        if (!selectedCourse) {
+            Alert.alert('Course Required', ' Please select a course first');
+            return;
+        }
+
+        // --- PRE-CHECK: Already Marked ---
+        if (todayAttendance.some(a => a.course_code === selectedCourse?.code)) {
+            Alert.alert('Already Marked', 'You have already marked attendance for this course today.');
+            return;
+        }
+
+        // --- PRE-CHECK: Schedule ---
+        const scheduleCheck = isWithinSchedule(
+            selectedCourse.session_day,
+            selectedCourse.session_time,
+            selectedCourse.duration
+        );
+        if (!scheduleCheck.valid) {
+            Alert.alert('No Active Session', scheduleCheck.reason);
+            return;
+        }
+
         if (!isBiometricSupported || !isBiometricEnrolled) {
             Alert.alert('Biometrics Unavailable', 'Your device does not support or have biometrics enrolled.');
             return;
@@ -478,7 +497,10 @@ export default function AttendanceMarkingScreen() {
             if (result.success) {
                 setScanStatus('success');
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                await logAttendanceToBoth(true);
+                // Brief pause to show success checkmark before logging
+                setTimeout(async () => {
+                    await logAttendanceToBoth('Fingerprint');
+                }, 1000);
                 // Keep success state visible briefly
                 await new Promise(resolve => setTimeout(resolve, 1200));
                 setIsScanning(false);
@@ -511,7 +533,7 @@ export default function AttendanceMarkingScreen() {
         const withinGrace = secondsLeft > 50; // first 10 seconds of a new minute
 
         if (code === currentCode || (withinGrace && code === prevCode)) {
-            await logAttendanceToBoth(false, code);
+            await logAttendanceToBoth('Passcode', code);
         } else {
             Alert.alert('Invalid Code', 'The passcode you entered is incorrect. Please check the current code and try again.');
             setAttendanceCode('');
@@ -545,15 +567,19 @@ export default function AttendanceMarkingScreen() {
     const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
         setScanned(true);
         let isValid = false;
+        let scannedCode = 'Unknown';
 
         try {
             // Try to parse as JSON (new format from admin dashboard)
             const qrData = JSON.parse(data);
+            scannedCode = qrData.courseCode || qrData.courseId || data;
+
             if (qrData.type === 'attendance_qr' && (qrData.courseId === selectedCourse?.id || qrData.courseCode === selectedCourse?.code)) {
                 isValid = true;
             }
         } catch (e) {
             // Fallback: check if data is plain course code or ID
+            scannedCode = data;
             if (data === selectedCourse?.code || data === selectedCourse?.id) {
                 isValid = true;
             }
@@ -562,11 +588,11 @@ export default function AttendanceMarkingScreen() {
         if (isValid) {
             setIsQRScannerVisible(false);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            await logAttendanceToBoth(false, 'QR-SCAN');
+            await logAttendanceToBoth('QR-Scan');
         } else {
             Alert.alert(
                 'Invalid QR Code',
-                'The scanned QR code does not match this course.',
+                `Scanned code: "${scannedCode}"\nExpected: "${selectedCourse?.code}".\n\nMake sure you selected the correct course.`,
                 [{ text: 'OK', onPress: () => setScanned(false) }]
             );
         }
