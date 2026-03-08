@@ -4,8 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { BarCodeScanner } from 'expo-barcode-scanner';
-import { Camera } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -558,15 +557,8 @@ export default function AttendanceCameraScreen() {
     );
 
     const QRScannerView = () => {
-        const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+        const [permission, requestPermission] = useCameraPermissions();
         const [scanned, setScanned] = useState(false);
-
-        useEffect(() => {
-            (async () => {
-                const { status } = await BarCodeScanner.requestPermissionsAsync();
-                setHasPermission(status === 'granted');
-            })();
-        }, []);
 
         const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
             setScanned(true);
@@ -580,7 +572,7 @@ export default function AttendanceCameraScreen() {
             setTimeout(() => setScanned(false), 2000);
         };
 
-        if (hasPermission === null) {
+        if (!permission) {
             return (
                 <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
                     <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
@@ -590,7 +582,7 @@ export default function AttendanceCameraScreen() {
                 </ReAnimated.View>
             );
         }
-        if (hasPermission === false) {
+        if (!permission.granted) {
             return (
                 <ReAnimated.View entering={FadeIn} exiting={FadeOut} style={styles.fullPageMode}>
                     <LinearGradient colors={[BLUE_PRIMARY, '#1E40AF']} style={StyleSheet.absoluteFill} />
@@ -598,10 +590,16 @@ export default function AttendanceCameraScreen() {
                         <Text style={styles.modeTitle}>No access to camera</Text>
                         <Text style={styles.modeSubtitle}>Please enable camera permissions in your device settings.</Text>
                         <TouchableOpacity
-                            style={styles.scanBtn}
+                            style={[styles.scanBtn, { marginBottom: 12 }]}
+                            onPress={requestPermission}
+                        >
+                            <Text style={styles.scanBtnText}>Grant Permission</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.scanBtn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#FFF' }]}
                             onPress={() => setAttendanceMode('activities')}
                         >
-                            <Text style={styles.scanBtnText}>Go Back</Text>
+                            <Text style={[styles.scanBtnText, { color: '#FFF' }]}>Go Back</Text>
                         </TouchableOpacity>
                     </View>
                 </ReAnimated.View>
@@ -624,8 +622,11 @@ export default function AttendanceCameraScreen() {
                     <Text style={styles.modeSubtitle}>Align the QR code within the frame to mark attendance for {selectedCourse?.name}</Text>
 
                     <View style={styles.qrScannerContainer}>
-                        <BarCodeScanner
-                            onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
+                        <CameraView
+                            onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+                            barcodeScannerSettings={{
+                                barcodeTypes: ["qr"],
+                            }}
                             style={StyleSheet.absoluteFillObject}
                         />
                         {scanned && (

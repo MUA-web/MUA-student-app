@@ -24,7 +24,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, Camera } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
-import * as Location from 'expo-location';
+
 import ConfettiCannon from 'react-native-confetti-cannon';
 import { Colors } from '../../constants/Colors';
 import Card from '../../components/Card';
@@ -45,8 +45,6 @@ export default function AttendanceMarkingScreen() {
     const [isBiometricEnrolled, setIsBiometricEnrolled] = useState(false);
 
     const [attendanceCode, setAttendanceCode] = useState('');
-    const [generatedCode, setGeneratedCode] = useState('');
-    const [codeCountdown, setCodeCountdown] = useState(60);
     const [selectedCourse, setSelectedCourse] = useState<any>(null);
     const [courses, setCourses] = useState<any[]>([]);
     const [isPasscodeModalVisible, setIsPasscodeModalVisible] = useState(false);
@@ -80,53 +78,12 @@ export default function AttendanceMarkingScreen() {
         fetchProfileAndCourses();
         checkBiometrics();
         fetchUnreadCount();
-        requestLocationEarly();
     }, []);
 
-    // Request location permission early so student enables GPS before attempting attendance
-    const requestLocationEarly = async () => {
-        try {
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            setLocationGranted(status === 'granted');
-            if (status !== 'granted') {
-                Alert.alert(
-                    '📍 Location Required',
-                    'This app needs your GPS location to verify you are in class before marking attendance. Please enable Location permission in your device settings.',
-                    [{ text: 'OK', style: 'default' }]
-                );
-            }
-        } catch (e) {
-            setLocationGranted(false);
-        }
-    };
 
 
-    // Rotating code: regenerate every minute, countdown every second
-    useEffect(() => {
-        if (!selectedCourse) return;
 
-        const regenerate = () => {
-            const code = generateMinuteCode(selectedCourse.code);
-            setGeneratedCode(code);
-            const now = new Date();
-            setCodeCountdown(60 - now.getSeconds());
-        };
 
-        regenerate(); // run immediately
-
-        const interval = setInterval(() => {
-            const now = new Date();
-            const secondsLeft = 60 - now.getSeconds();
-            setCodeCountdown(secondsLeft);
-            if (secondsLeft === 60) {
-                // A new minute just started — regenerate code
-                const code = generateMinuteCode(selectedCourse.code);
-                setGeneratedCode(code);
-            }
-        }, 1000);
-
-        return () => clearInterval(interval);
-    }, [selectedCourse]);
 
     // Start animations when scanning overlay is visible
     useEffect(() => {
@@ -277,7 +234,6 @@ export default function AttendanceMarkingScreen() {
                 }
             } else {
                 setSelectedCourse(null);
-                setGeneratedCode('');
             }
 
             // 3. Fetch today's attendance to prevent duplicates
@@ -356,11 +312,7 @@ export default function AttendanceMarkingScreen() {
         return code;
     };
 
-    // Keep generateDailyCodeForCourse for backwards compatibility (used on course select)
-    const generateDailyCodeForCourse = (courseCode: string) => {
-        const code = generateMinuteCode(courseCode);
-        setGeneratedCode(code);
-    };
+
 
     const checkBiometrics = async () => {
         const hasHardware = await LocalAuthentication.hasHardwareAsync();
@@ -410,56 +362,7 @@ export default function AttendanceMarkingScreen() {
             }
             // ----------------------
 
-            // --- Geofencing Check ---
-            if (selectedCourse.latitude && selectedCourse.longitude) {
-                const { status } = await Location.requestForegroundPermissionsAsync();
-                if (status !== 'granted') {
-                    Alert.alert('Permission Denied', 'Location permission is required to verify you are in class.');
-                    return;
-                }
 
-                let location = null;
-                try {
-                    // Use a timeout to avoid waiting forever for a fresh fix
-                    const locationPromise = Location.getCurrentPositionAsync({
-                        accuracy: Location.Accuracy.High
-                    });
-
-                    const timeoutPromise = new Promise((_, reject) =>
-                        setTimeout(() => reject(new Error('timeout')), 5000)
-                    );
-
-                    // Race the location against a 5-second timeout
-                    location = await Promise.race([locationPromise, timeoutPromise]) as Location.LocationObject;
-                } catch (e) {
-                    // Fallback to last known if fresh fails or times out
-                    location = await Location.getLastKnownPositionAsync();
-                }
-
-                if (!location) {
-                    Alert.alert('Location Error', 'Could not determine your location. Please ensure GPS is enabled and try again.');
-                    return;
-                }
-
-                const distanceMeters = getDistanceFromLatLonInMeters(
-                    location.coords.latitude,
-                    location.coords.longitude,
-                    selectedCourse.latitude,
-                    selectedCourse.longitude
-                );
-
-                const allowedRadius = selectedCourse.radius_meters || 300; // Increased to 300m for better consistency
-
-                if (distanceMeters > allowedRadius) {
-                    Alert.alert(
-                        'Out of Range',
-                        `You are approximately ${Math.round(distanceMeters)}m away from the class location. You must be within ${allowedRadius}m to mark attendance.\n\n` +
-                        'If you are actually in class, the class location might be inaccurate. Please ask your Admin to "Sync Location" for this course.'
-                    );
-                    return;
-                }
-            }
-            // ------------------------
 
             await finalizeAttendance(isBiometric, code);
         } catch (error: any) {
@@ -693,17 +596,6 @@ export default function AttendanceMarkingScreen() {
                 </SafeAreaView>
 
                 <View style={[styles.formBody, { marginTop: 10 }]}>
-                    {locationGranted === false && (
-                        <View style={styles.locationWarningBanner}>
-                            <Ionicons name="location" size={20} color="#92400E" />
-                            <Text style={styles.locationWarningText}>
-                                Location is required for attendance. Please enable GPS in your device settings.
-                            </Text>
-                            <TouchableOpacity onPress={requestLocationEarly} style={styles.retryLocationBtn}>
-                                <Text style={styles.retryLocationText}>Retry</Text>
-                            </TouchableOpacity>
-                        </View>
-                    )}
 
                     <View style={styles.modernProgressCard}>
                         <View style={styles.formSection}>
@@ -749,111 +641,9 @@ export default function AttendanceMarkingScreen() {
                                 </View>
                             )}
 
-                            {/* --- Rotating Live Attendance Code --- */}
-                            {selectedCourse && generatedCode && (
-                                <View style={{ marginTop: 24, padding: 16, backgroundColor: '#EFF6FF', borderRadius: 16, borderWidth: 1, borderColor: '#BFDBFE', alignItems: 'center' }}>
-                                    <Text style={{ fontSize: 13, fontWeight: '600', color: '#3B82F6', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>Live Attendance Code</Text>
-                                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                                        {generatedCode.split('').map((digit: string, idx: number) => (
-                                            <View key={idx} style={{ width: 48, height: 56, backgroundColor: '#FFF', borderRadius: 12, justifyContent: 'center', alignItems: 'center', shadowColor: '#2563EB', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 4 }}>
-                                                <Text style={{ fontSize: 28, fontWeight: '800', color: '#1E40AF' }}>{digit}</Text>
-                                            </View>
-                                        ))}
-                                    </View>
 
-                                    {/* Countdown bar */}
-                                    <View style={{ width: '100%', marginTop: 14, gap: 6 }}>
-                                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                                            <Text style={{ fontSize: 11, color: '#64748B', fontWeight: '600' }}>Code refreshes in</Text>
-                                            <Text style={{
-                                                fontSize: 11, fontWeight: '800',
-                                                color: codeCountdown <= 10 ? '#DC2626' : codeCountdown <= 20 ? '#D97706' : '#2563EB'
-                                            }}>{codeCountdown}s</Text>
-                                        </View>
-                                        <View style={{ height: 6, backgroundColor: '#DBEAFE', borderRadius: 3, overflow: 'hidden' }}>
-                                            <View style={{
-                                                height: 6,
-                                                borderRadius: 3,
-                                                width: `${(codeCountdown / 60) * 100}%`,
-                                                backgroundColor: codeCountdown <= 10 ? '#DC2626' : codeCountdown <= 20 ? '#D97706' : '#2563EB'
-                                            }} />
-                                        </View>
-                                    </View>
 
-                                    <Text style={{ fontSize: 12, color: '#64748B', marginTop: 8, textAlign: 'center' }}>
-                                        Code changes every minute for {selectedCourse.code}
-                                    </Text>
-                                </View>
-                            )}
-                            {/* ----------------------------------------------------------------- */}
-
-                            <Text style={[styles.modernSectionTitle, { marginTop: 24 }]}>2. Biometric Scan</Text>
-                            <Text style={styles.modernProgSub}>Tap to verify your identity</Text>
-
-                            <TouchableOpacity
-                                style={[
-                                    styles.biometricBtn,
-                                    (isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)) && styles.biometricBtnLocked,
-                                    { marginTop: 16, marginBottom: 24 }
-                                ]}
-                                onPress={handleFingerprintAttendance}
-                                disabled={isSaving || isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)}
-                            >
-                                <View style={styles.biometricPlaceholder}>
-                                    <View style={[styles.modernActionIconBox, { backgroundColor: isAlreadyMarked ? '#F1F5F9' : '#EFF6FF' }]}>
-                                        <Ionicons name="finger-print" size={32} color={isAlreadyMarked ? '#94A3B8' : '#2563EB'} />
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={[styles.modernActionTitle, isAlreadyMarked && { color: '#94A3B8' }]}>Biometric Secure Link</Text>
-                                        <Text style={styles.modernProgSub}>
-                                            {isAlreadyMarked ? 'Identity Verified Today' : (!selectedCourse ? 'Please select a course first' : 'Tap to authenticate')}
-                                        </Text>
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={20} color={isAlreadyMarked ? '#CBD5E1' : '#64748B'} />
-                                </View>
-                                {isSuccess && (
-                                    <View style={[styles.retakeBadge, { backgroundColor: SUCCESS_GREEN }]}>
-                                        <Ionicons name="checkmark-circle" size={14} color="#FFF" />
-                                        <Text style={styles.retakeText}>SUCCESS</Text>
-                                    </View>
-                                )}
-                            </TouchableOpacity>
-
-                            <Text style={styles.modernSectionTitle}>3. Security Passcode</Text>
-                            <Text style={styles.modernProgSub}>Alternative verification method</Text>
-
-                            <TouchableOpacity
-                                style={[
-                                    styles.modernCourseCard,
-                                    { marginTop: 16, backgroundColor: '#F8FAFC' },
-                                    (todayAttendance.some(a => a.course_code === selectedCourse?.code)) && { opacity: 0.6 }
-                                ]}
-                                onPress={() => {
-                                    if (!selectedCourse) {
-                                        Alert.alert('Course Required', 'Please select a course first');
-                                        return;
-                                    }
-                                    if (todayAttendance.some(a => a.course_code === selectedCourse?.code)) {
-                                        Alert.alert('Already Marked', 'You have already marked attendance for this course today.');
-                                        return;
-                                    }
-                                    setIsPasscodeModalVisible(true);
-                                }}
-                                disabled={isSaving || isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)}
-                            >
-                                <View style={styles.modernCourseRow}>
-                                    <View style={[styles.modernCourseIconBox, { backgroundColor: isAlreadyMarked ? '#F1F5F9' : '#FFFFFF' }]}>
-                                        <Ionicons name="keypad" size={24} color={isAlreadyMarked ? '#94A3B8' : '#2563EB'} />
-                                    </View>
-                                    <View style={[styles.modernCourseInfo, { flex: 1 }]}>
-                                        <Text style={[styles.infoLabel, { color: isAlreadyMarked ? '#94A3B8' : '#64748B' }]}>PASSCODE ACCESS</Text>
-                                        <Text style={[styles.modernCourseName, { fontSize: 18 }, isAlreadyMarked && { color: '#94A3B8' }]}>••••</Text>
-                                    </View>
-                                    <Ionicons name="chevron-forward" size={20} color={isAlreadyMarked ? '#CBD5E1' : '#64748B'} />
-                                </View>
-                            </TouchableOpacity>
-
-                            <Text style={[styles.modernSectionTitle, { marginTop: 24 }]}>4. QR Code Scanning</Text>
+                            <Text style={[styles.modernSectionTitle, { marginTop: 24 }]}>2. QR Code Scanning</Text>
                             <Text style={styles.modernProgSub}>Scan the code from the Admin/Lecturer</Text>
 
                             <TouchableOpacity
@@ -878,39 +668,6 @@ export default function AttendanceMarkingScreen() {
                             </TouchableOpacity>
                         </View>
                     </View>
-
-                    <TouchableOpacity
-                        style={[
-                            styles.submitBtnLarge,
-                            (isSaving || isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)) && { opacity: 0.6 }
-                        ]}
-                        onPress={handleFingerprintAttendance}
-                        disabled={isSaving || isSuccess || !selectedCourse || todayAttendance.some(a => a.course_code === selectedCourse?.code)}
-                    >
-                        <LinearGradient
-                            colors={isSuccess ? [SUCCESS_GREEN, SUCCESS_GREEN] : todayAttendance.some(a => a.course_code === selectedCourse?.code) ? ['#64748B', '#475569'] : ['#2563EB', '#1D4ED8']}
-                            style={styles.submitGradient}
-                        >
-                            {isSaving ? (
-                                <ActivityIndicator color="#FFF" />
-                            ) : isSuccess ? (
-                                <>
-                                    <Text style={styles.submitBtnText}>PRESENT</Text>
-                                    <Ionicons name="checkmark-done-circle" size={22} color="#FFF" style={{ marginLeft: 8 }} />
-                                </>
-                            ) : todayAttendance.some(a => a.course_code === selectedCourse?.code) ? (
-                                <>
-                                    <Text style={styles.submitBtnText}>ALREADY MARKED TODAY</Text>
-                                    <Ionicons name="calendar" size={22} color="#FFF" style={{ marginLeft: 8 }} />
-                                </>
-                            ) : (
-                                <>
-                                    <Text style={styles.submitBtnText}>MARK ATTENDANCE</Text>
-                                    <Ionicons name="finger-print" size={22} color="#FFF" style={{ marginLeft: 8 }} />
-                                </>
-                            )}
-                        </LinearGradient>
-                    </TouchableOpacity>
 
                     {isSuccess && (
                         <View style={styles.enrolledSuccessBox}>
