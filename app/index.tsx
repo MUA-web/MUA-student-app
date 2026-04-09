@@ -29,15 +29,15 @@ export default function SplashScreen() {
         const checkFlow = async () => {
             const signupComplete = await AsyncStorage.getItem('HAS_SEEN_ONBOARDING');
             let session = null;
-            try {
-                const { data } = await supabase.auth.getSession();
-                session = data.session;
-            } catch (error: any) {
-                console.warn('Session error:', error.message);
-                // If the refresh token is invalid, clear the session and force re-login
-                if (error.message.includes('Invalid Refresh Token')) {
+            const { data, error: sessionError } = await supabase.auth.getSession();
+            if (sessionError) {
+                console.warn('Session error:', sessionError.message);
+                // If the refresh token is invalid or missing, clear the session and force re-login
+                if (sessionError.message.includes('refresh_token') || sessionError.message.includes('Invalid Refresh Token')) {
                     await supabase.auth.signOut();
                 }
+            } else {
+                session = data?.session;
             }
 
             // Artificial delay for splash screen branding

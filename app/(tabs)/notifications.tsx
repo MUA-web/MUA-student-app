@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import AppHeader from '../../components/AppHeader';
 
 const BLUE_PRIMARY = '#2563EB';
 const SLATE_DARK = '#0F172A';
@@ -114,21 +115,19 @@ export default function NotificationsScreen() {
     );
 
     return (
-        <SafeAreaView style={styles.container}>
+        <View style={styles.container}>
             <StatusBar barStyle="dark-content" />
-            <View style={styles.header}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-                    <Ionicons name="chevron-back" size={28} color={SLATE_DARK} />
-                </TouchableOpacity>
-                <Text style={styles.headerTitle}>Notifications</Text>
-                {notifications.some(n => !n.is_read) ? (
-                    <TouchableOpacity onPress={markAllAsRead}>
-                        <Text style={styles.markAllRef}>Mark all as read</Text>
-                    </TouchableOpacity>
-                ) : (
-                    <View style={{ width: 40 }} />
-                )}
-            </View>
+            <AppHeader
+                title="Notifications"
+                showBackButton={true}
+                rightElement={
+                    notifications.some(n => !n.is_read) ? (
+                        <TouchableOpacity onPress={markAllAsRead}>
+                            <Text style={styles.markAllRef}>Mark all as read</Text>
+                        </TouchableOpacity>
+                    ) : null
+                }
+            />
 
             {isLoading ? (
                 <View style={styles.centerBox}>
@@ -153,7 +152,7 @@ export default function NotificationsScreen() {
                     <Text style={styles.emptySub}>No new notifications at the moment.</Text>
                 </View>
             )}
-        </SafeAreaView>
+        </View>
     );
 }
 

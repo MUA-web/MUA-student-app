@@ -24,6 +24,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Haptics from 'expo-haptics';
+import AppHeader from '../../components/AppHeader';
 
 import ConfettiCannon from 'react-native-confetti-cannon';
 import { Colors } from '../../constants/Colors';
@@ -62,6 +63,7 @@ export default function AttendanceMarkingScreen() {
     });
     const [unreadCount, setUnreadCount] = useState(0);
     const [locationGranted, setLocationGranted] = useState<boolean | null>(null); // null = checking
+    const [role, setRole] = useState<'admin' | 'student'>('student');
 
     // Scanning overlay state
     const [isScanning, setIsScanning] = useState(false);
@@ -269,6 +271,7 @@ export default function AttendanceMarkingScreen() {
                     setLevelId(student.level_id);
                     setDepartmentName(student.department || '');
                     setLevelLabel(student.level || '');
+                    setRole(session.user.user_metadata?.role || 'student');
 
                     // Proceed with student object
                     await fetchCoursesForFilter(student.department_id, student.level_id, student.department, student.level, student.registration_number);
@@ -279,6 +282,7 @@ export default function AttendanceMarkingScreen() {
                     setRegNumber(meta.reg_no || '');
                     setDepartmentName(meta.department || '');
                     setLevelLabel(meta.level || '');
+                    setRole(meta.role || 'student');
 
                     // Fetch courses using names from metadata
                     await fetchCoursesForFilter(null, null, meta.department, meta.level, meta.reg_no);
@@ -570,19 +574,59 @@ export default function AttendanceMarkingScreen() {
         let scannedCode = 'Unknown';
 
         try {
-            // Try to parse as JSON (new format from admin dashboard)
-            const qrData = JSON.parse(data);
-            scannedCode = qrData.courseCode || qrData.courseId || data;
+            // Priority: Try to parse the new compact pipe-delimited format
+            if (data.startsWith('qr|att|')) {
+                const parts = data.split('|');
+                if (parts.length >= 4) {
+                    const qrType = parts[0]; // qr
+                    const subType = parts[1]; // att
+                    const courseId = parts[2];
+                    const courseCode = parts[3]?.trim()?.toLowerCase();
+                    
+                    const targetCode = selectedCourse?.code?.trim()?.toLowerCase();
+                    const targetId = selectedCourse?.id;
+                    
+                    scannedCode = parts[3] || parts[2] || data;
+                    
+                    if (subType === 'att' && (courseId === targetId || courseCode === targetCode)) {
+                        isValid = true;
+                    }
+                }
+            } 
+            
+            // Fallback: Try to parse as JSON (legacy format)
+            if (!isValid) {
+                try {
+                    const qrData = JSON.parse(data);
+                    const courseId = qrData.courseId;
+                    const courseCode = qrData.courseCode?.trim()?.toLowerCase();
+                    const targetCode = selectedCourse?.code?.trim()?.toLowerCase();
+                    const targetId = selectedCourse?.id;
 
-            if (qrData.type === 'attendance_qr' && (qrData.courseId === selectedCourse?.id || qrData.courseCode === selectedCourse?.code)) {
-                isValid = true;
+                    scannedCode = qrData.courseCode || qrData.courseId || data;
+
+                    if (qrData.type === 'attendance_qr' && (courseId === targetId || courseCode === targetCode)) {
+                        isValid = true;
+                    }
+                } catch (e) {
+                    // Not JSON, continue to next fallback
+                }
+            }
+
+            // Ultimate Fallback: check if data is plain course code or ID
+            if (!isValid) {
+                const strData = data?.trim()?.toLowerCase();
+                const targetCode = selectedCourse?.code?.trim()?.toLowerCase();
+                const targetId = selectedCourse?.id;
+
+                scannedCode = data;
+                if (strData === targetCode || data === targetId) {
+                    isValid = true;
+                }
             }
         } catch (e) {
-            // Fallback: check if data is plain course code or ID
+            console.error('QR parsing error:', e);
             scannedCode = data;
-            if (data === selectedCourse?.code || data === selectedCourse?.id) {
-                isValid = true;
-            }
         }
 
         if (isValid) {
@@ -601,27 +645,18 @@ export default function AttendanceMarkingScreen() {
     return (
         <View style={styles.baseContainer}>
             <StatusBar barStyle="dark-content" />
+            <AppHeader
+                title="Mark Attendance"
+                userName={fullName}
+                role={role}
+                unreadCount={unreadCount}
+                showBackButton={true}
+            />
             <ScrollView
                 contentContainerStyle={styles.scrollContent}
                 bounces={false}
                 showsVerticalScrollIndicator={false}
             >
-                <SafeAreaView edges={['top']}>
-                    <View style={styles.referenceHeader}>
-                        <View style={styles.refHeaderLeft}>
-                            <View style={[styles.refAvatar, { backgroundColor: '#EFF6FF' }]}>
-                                <Ionicons name="school" size={24} color="#2563EB" />
-                            </View>
-                            <View>
-                                <Text style={styles.refWelcome}>Mark Attendance</Text>
-                                <Text style={styles.refName}>{fullName || 'Student'}</Text>
-                            </View>
-                        </View>
-                        <TouchableOpacity onPress={() => router.back()} style={styles.refNotificationBtn}>
-                            <Ionicons name="close" size={24} color="#0F172A" />
-                        </TouchableOpacity>
-                    </View>
-                </SafeAreaView>
 
                 <View style={[styles.formBody, { marginTop: 10 }]}>
 
@@ -807,6 +842,10 @@ export default function AttendanceMarkingScreen() {
                                     onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
                                     barcodeScannerSettings={{
                                         barcodeTypes: ['qr'],
+                                    }}
+                                    onMountError={(error) => {
+                                        console.error('Camera mount error:', error);
+                                        Alert.alert('Camera Error', 'Failed to start camera. Please check permissions.');
                                     }}
                                     style={StyleSheet.absoluteFillObject}
                                 />

@@ -1,7 +1,25 @@
-import { Stack } from "expo-router";
+import { Stack, useRouter } from "expo-router";
+import { useEffect } from "react";
 import { View, Platform, StyleSheet } from "react-native";
+import { supabase } from "../lib/supabase";
 
 export default function RootLayout() {
+  const router = useRouter();
+
+  useEffect(() => {
+    // Listen for global auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        // Force redirect to login if signed out
+        router.replace('/(auth)/login');
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   const content = (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />

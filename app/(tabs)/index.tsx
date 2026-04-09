@@ -16,7 +16,16 @@ import {
     ActivityIndicator
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import ReAnimated, {
+    useAnimatedStyle,
+    useSharedValue,
+    withRepeat,
+    withTiming,
+    interpolate,
+    Extrapolate
+} from 'react-native-reanimated';
 import Card from '../../components/Card';
+import AppHeader from '../../components/AppHeader';
 import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 
@@ -50,6 +59,23 @@ export default function Dashboard() {
     const [studentBooks, setStudentBooks] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [unreadCount, setUnreadCount] = useState(0);
+    const [ongoingCourse, setOngoingCourse] = useState<any>(null);
+
+    const rotation = useSharedValue(0);
+
+    useEffect(() => {
+        rotation.value = withRepeat(
+            withTiming(360, { duration: 4000 }),
+            -1,
+            false
+        );
+    }, []);
+
+    const animatedBorderStyle = useAnimatedStyle(() => {
+        return {
+            transform: [{ rotate: `${rotation.value}deg` }],
+        };
+    });
 
     useEffect(() => {
         fetchUserProfile();
@@ -60,7 +86,13 @@ export default function Dashboard() {
             fetchUnreadCount();
             // Re-fetch dashboard data every time screen comes into focus
             // so attendance progress updates after student marks attendance
-            supabase.auth.getSession().then(({ data: { session } }) => {
+            supabase.auth.getSession().then(({ data: { session }, error }) => {
+                if (error) {
+                    if (error.message.includes('refresh_token') || error.message.includes('Invalid Refresh Token')) {
+                        supabase.auth.signOut().then(() => router.replace('/(auth)/login'));
+                    }
+                    return;
+                }
                 if (session?.user) {
                     const userRole = session.user.user_metadata?.role || 'student';
                     fetchDashboardData(userRole, session.user.user_metadata);
@@ -71,7 +103,17 @@ export default function Dashboard() {
 
     const fetchUserProfile = async () => {
         try {
-            const { data: { session } } = await supabase.auth.getSession();
+            const { data, error: sessionError } = await supabase.auth.getSession();
+            const session = data?.session;
+
+            if (sessionError) {
+                console.error('Session error:', sessionError.message);
+                if (sessionError.message.includes('refresh_token') || sessionError.message.includes('Invalid Refresh Token')) {
+                    await supabase.auth.signOut();
+                    router.replace('/(auth)/login');
+                }
+                return;
+            }
 
             if (session) {
                 const user = session.user;
@@ -82,9 +124,7 @@ export default function Dashboard() {
                 // Trigger dashboard data fetch without awaiting all of it for the main UI to show up
                 fetchDashboardData(userRole, user.user_metadata);
             } else {
-                setRole('student');
-                setUserName('Guest');
-                fetchDashboardData('student', null);
+                router.replace('/(auth)/login');
             }
         } catch (error) {
             console.error('Error fetching profile:', error);
@@ -201,6 +241,13 @@ export default function Dashboard() {
                             ...prev,
                             personalRate: Math.min(100, Math.round((totalAttended / totalSessionsSum) * 100))
                         }));
+
+                        // Find ongoing course
+                        const activeCourse = enrichedCourses.find(course => {
+                            const schedule = isWithinSchedule(course.session_day, course.session_time, course.duration);
+                            return schedule.valid;
+                        });
+                        setOngoingCourse(activeCourse || null);
                     } catch (e) {
                         console.error('Error fetching student attendance details:', e);
                     }
@@ -230,6 +277,65 @@ export default function Dashboard() {
 
     const toggleRole = () => setRole(prev => prev === 'admin' ? 'student' : 'admin');
     const toggleMenu = () => setIsMenuOpen(!isMenuOpen);
+
+    const handleLogout = async () => {
+        try {
+            await supabase.auth.signOut();
+            router.replace('/(auth)/login');
+        } catch (error) {
+            console.error('Logout error:', error);
+        }
+    };
+
+    const isWithinSchedule = (sessionDay: string, startTimeStr: string, durationStr: string) => {
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const now = new Date();
+        const currentDay = days[now.getDay()];
+
+        const isToday = sessionDay && sessionDay.toLowerCase() === currentDay.toLowerCase();
+
+        if (!isToday) {
+            return { valid: false, isToday: false, isUpcoming: false, reason: `This course is scheduled for ${sessionDay}, but today is ${currentDay}.` };
+        }
+
+        if (!startTimeStr) return { valid: false, isToday: true, isUpcoming: false, reason: "No start time specified for today's session." };
+
+        const match = startTimeStr.match(/(\d+):?(\d+)?\s*(AM|PM)/i);
+        if (!match) return { valid: false, isToday: true, isUpcoming: false, reason: "Invalid start time format." };
+
+        try {
+            let startHours = parseInt(match[1]);
+            const startMinutes = parseInt(match[2] || '0');
+            const ampm = match[3].toUpperCase();
+
+            if (ampm === 'PM' && startHours < 12) startHours += 12;
+            if (ampm === 'AM' && startHours === 12) startHours = 0;
+
+            const startDate = new Date(now);
+            startDate.setHours(startHours, startMinutes, 0, 0);
+
+            const duration = parseInt(durationStr) || 1;
+            const endDate = new Date(startDate);
+            endDate.setHours(startDate.getHours() + duration);
+
+            const isActive = now >= startDate && now <= endDate;
+            const isUpcoming = now < startDate;
+
+            if (isActive) return { valid: true, isToday: true, isUpcoming: false };
+
+            const endStr = endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            return {
+                valid: false,
+                isToday: true,
+                isUpcoming: isUpcoming,
+                reason: isUpcoming
+                    ? `Starts at ${startTimeStr}.`
+                    : `Ended at ${endStr}.`
+            };
+        } catch (e) {
+            return { valid: true, isToday: true, isUpcoming: false };
+        }
+    };
 
     const menuItems = [
         { id: '1', title: 'Attendance Log', icon: 'list-outline', route: '/(admin)/attendance-log' },
@@ -295,9 +401,9 @@ export default function Dashboard() {
                         </ScrollView>
 
                         <View style={styles.menuFooter}>
-                            <TouchableOpacity style={styles.logoutBtn} onPress={async () => { await supabase.auth.signOut(); router.replace('/(auth)/login'); }}>
-                                <Ionicons name="log-out-outline" size={20} color={Colors.danger} />
-                                <Text style={styles.logoutText}>Logout</Text>
+                            <TouchableOpacity style={styles.modernLogoutBtn} onPress={async () => { await supabase.auth.signOut(); router.replace('/(auth)/login'); }}>
+                                <Ionicons name="log-out-outline" size={20} color="#EF4444" />
+                                <Text style={styles.modernLogoutText}>Logout</Text>
                             </TouchableOpacity>
                         </View>
                     </SafeAreaView>
@@ -306,402 +412,399 @@ export default function Dashboard() {
         </Modal>
     );
 
-    const renderHeader = () => (
-        <View style={[styles.headerGradient, { backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9', elevation: 2, shadowOpacity: 0.05 }]}>
-            <SafeAreaView edges={['top']}>
-                <View style={styles.headerTopNav}>
-                    <View style={styles.headerLeft}>
-                        {role === 'student' && (
-                            <TouchableOpacity style={styles.avatarMainBox}>
-                                <Image
-                                    source={{ uri: 'https://i.pravatar.cc/150?img=33' }}
-                                    style={styles.avatarMain}
-                                />
-                            </TouchableOpacity>
-                        )}
-                        <View>
-                            <View style={styles.badgeRow}>
-                                <View style={styles.activeIndicator} />
-                                <Text style={[styles.onlineText, { color: SLATE_MEDIUM }]}>{role.toUpperCase()} MODE</Text>
-                            </View>
-                            <Text style={[styles.headerTitle, { color: SLATE_DARK }]}>
-                                {role === 'admin' ? `Welcome back, ${userName.split(' ')[0]}` : `Hello, ${userName.split(' ')[0]}`}
-                            </Text>
-                        </View>
-                    </View>
-                    {role === 'admin' && (
-                        <TouchableOpacity onPress={toggleMenu} style={[styles.menuToggleBtnRight, { backgroundColor: '#F1F5F9' }]}>
-                            <Ionicons name="menu-outline" size={32} color={BLUE_PRIMARY} />
-                        </TouchableOpacity>
-                    )}
-                    {role === 'student' && (
-                        <TouchableOpacity
-                            onPress={() => router.push('/(tabs)/notifications')}
-                            style={[styles.menuToggleBtnRight, { backgroundColor: '#F1F5F9', width: 48, height: 48, borderRadius: 24 }]}
-                        >
-                            <Ionicons name="notifications-outline" size={24} color={BLUE_PRIMARY} />
-                            {unreadCount > 0 && (
-                                <View style={styles.refNotificationDot} />
-                            )}
-                        </TouchableOpacity>
-                    )}
-                </View>
-            </SafeAreaView>
-        </View>
-    );
+
 
     const renderAdminView = () => (
-        <>
-            {/* Hero Banner */}
+        <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
             <LinearGradient
-                colors={['#1E40AF', '#2563EB', '#3B82F6']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.adminHero}
+                colors={['#1E293B', '#0F172A']}
+                style={styles.adminHeroNew}
             >
-                <View style={styles.adminHeroContent}>
-                    <Text style={styles.adminHeroSub}>📊 System Overview</Text>
-                    <Text style={styles.adminHeroTitle}>Attendance Control</Text>
-                    <Text style={styles.adminHeroDate}>{new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</Text>
-                </View>
-                <Ionicons name="shield-checkmark" size={80} color="rgba(255,255,255,0.12)" style={{ position: 'absolute', right: 16, bottom: 8 }} />
+                    <View style={styles.adminHeroTop}>
+                        <View>
+                            <Text style={styles.adminSystemName}>SYSTEM ADMINISTRATION</Text>
+                            <Text style={styles.adminStatusTitle}>Control Dashboard</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', gap: 12 }}>
+                            <TouchableOpacity onPress={handleLogout} style={[styles.adminProfileBtnNew, { backgroundColor: '#FFFFFF', borderColor: '#F1F5F9' }]}>
+                                <Ionicons name="log-out-outline" size={24} color="#EF4444" />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={toggleMenu} style={styles.adminProfileBtnNew}>
+                                <Ionicons name="apps" size={24} color="#FFF" />
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+
+                    <View style={styles.adminStatRowNew}>
+                        <View style={styles.adminStatItemNew}>
+                            <Text style={styles.adminStatValNew}>{stats.registered}</Text>
+                            <Text style={styles.adminStatLabNew}>Registry</Text>
+                        </View>
+                        <View style={styles.adminStatDivider} />
+                        <View style={styles.adminStatItemNew}>
+                            <Text style={[styles.adminStatValNew, { color: '#10B981' }]}>{stats.present}</Text>
+                            <Text style={styles.adminStatLabNew}>Active</Text>
+                        </View>
+                        <View style={styles.adminStatDivider} />
+                        <View style={styles.adminStatItemNew}>
+                            <Text style={[styles.adminStatValNew, { color: '#EF4444' }]}>{stats.absent}</Text>
+                            <Text style={styles.adminStatLabNew}>Absence</Text>
+                        </View>
+                        <View style={styles.adminStatDivider} />
+                        <View style={styles.adminStatItemNew}>
+                            <Text style={[styles.adminStatValNew, { color: '#F59E0B' }]}>{stats.attendanceRate}%</Text>
+                            <Text style={styles.adminStatLabNew}>Rate</Text>
+                        </View>
+                    </View>
             </LinearGradient>
 
-            {/* Stat Strip */}
-            <View style={styles.adminStatStrip}>
-                <View style={[styles.adminStatCard, { borderTopColor: '#2563EB' }]}>
-                    <View style={[styles.adminStatIconBox, { backgroundColor: '#EFF6FF' }]}>
-                        <Ionicons name="people" size={20} color="#2563EB" />
-                    </View>
-                    <Text style={styles.adminStatValue}>{stats.registered}</Text>
-                    <Text style={styles.adminStatLabel}>Total{'\n'}Students</Text>
-                </View>
-                <View style={[styles.adminStatCard, { borderTopColor: '#059669' }]}>
-                    <View style={[styles.adminStatIconBox, { backgroundColor: '#ECFDF5' }]}>
-                        <Ionicons name="checkmark-circle" size={20} color="#059669" />
-                    </View>
-                    <Text style={[styles.adminStatValue, { color: '#059669' }]}>{stats.present}</Text>
-                    <Text style={styles.adminStatLabel}>Present{'\n'}Today</Text>
-                </View>
-                <View style={[styles.adminStatCard, { borderTopColor: '#DC2626' }]}>
-                    <View style={[styles.adminStatIconBox, { backgroundColor: '#FEF2F2' }]}>
-                        <Ionicons name="close-circle" size={20} color="#DC2626" />
-                    </View>
-                    <Text style={[styles.adminStatValue, { color: '#DC2626' }]}>{stats.absent}</Text>
-                    <Text style={styles.adminStatLabel}>Absent{'\n'}Today</Text>
-                </View>
-                <View style={[styles.adminStatCard, { borderTopColor: '#D97706' }]}>
-                    <View style={[styles.adminStatIconBox, { backgroundColor: '#FFFBEB' }]}>
-                        <Ionicons name="stats-chart" size={20} color="#D97706" />
-                    </View>
-                    <Text style={[styles.adminStatValue, { color: '#D97706' }]}>{stats.attendanceRate}%</Text>
-                    <Text style={styles.adminStatLabel}>Attend{'\n'}Rate</Text>
-                </View>
-            </View>
-
-            {/* Quick Actions */}
-            <View style={styles.sectionBody}>
+            <View style={styles.adminContentBodyNew}>
                 <View style={styles.overviewHeader}>
-                    <Text style={styles.sectionTitle}>Quick Actions</Text>
+                    <Text style={styles.modernSectionTitle}>System Command</Text>
+                    <View style={styles.inlineBadge}>
+                        <Text style={styles.inlineBadgeText}>Quick Access</Text>
+                    </View>
                 </View>
-                <View style={styles.adminActionsGrid}>
+
+                <View style={styles.adminActionsGridNew}>
                     {[
-                        { label: 'Attendance Log', sub: 'View all records', icon: 'list', color: '#2563EB', bg: '#EFF6FF', route: '/(admin)/attendance-log' },
-                        { label: 'Students', sub: 'Manage accounts', icon: 'people', color: '#7C3AED', bg: '#F5F3FF', route: '/(admin)/students' },
-                        { label: 'Courses', sub: 'Add or edit courses', icon: 'book', color: '#059669', bg: '#ECFDF5', route: '/(admin)/courses' },
-                        { label: 'Settings', sub: 'App configuration', icon: 'settings', color: '#D97706', bg: '#FFFBEB', route: '/(admin)/settings' },
+                        { label: 'Attendance', icon: 'list', color: '#6366F1', route: '/(admin)/attendance-log' },
+                        { label: 'Students', icon: 'people', color: '#8B5CF6', route: '/(admin)/students' },
+                        { label: 'Courses', icon: 'book', color: '#10B981', route: '/(admin)/courses' },
+                        { label: 'Settings', icon: 'settings-2', color: '#F59E0B', route: '/(admin)/settings' },
                     ].map((item, i) => (
                         <TouchableOpacity
                             key={i}
-                            style={styles.adminActionCard}
+                            style={styles.adminActionCardNew}
                             onPress={() => router.push(item.route as any)}
                         >
-                            <View style={[styles.adminActionIconBox, { backgroundColor: item.bg }]}>
+                            <View style={[styles.adminActionIconNew, { backgroundColor: item.color + '15' }]}>
                                 <Ionicons name={item.icon as any} size={24} color={item.color} />
                             </View>
-                            <Text style={styles.adminActionLabel}>{item.label}</Text>
-                            <Text style={styles.adminActionSub}>{item.sub}</Text>
+                            <Text style={styles.adminActionLabelNew}>{item.label}</Text>
                         </TouchableOpacity>
                     ))}
                 </View>
 
-                {/* Recent Attendance */}
-                <View style={[styles.overviewHeader, { marginTop: 8 }]}>
-                    <Text style={styles.sectionTitle}>Recent Activity</Text>
+                <View style={[styles.overviewHeader, { marginTop: 24 }]}>
+                    <Text style={styles.modernSectionTitle}>Live Activity</Text>
                     <TouchableOpacity onPress={() => router.push('/(admin)/attendance-log' as any)}>
-                        <Text style={{ color: BLUE_PRIMARY, fontWeight: '700', fontSize: 13 }}>View All</Text>
+                        <Text style={{ color: BLUE_PRIMARY, fontWeight: '700', fontSize: 13 }}>Audit Logs</Text>
                     </TouchableOpacity>
                 </View>
 
-                {recentAttendance.length > 0 ? (
-                    recentAttendance.map((item, index) => (
-                        <View key={index} style={styles.adminActivityRow}>
-                            <View style={[styles.adminActivityAvatar, { backgroundColor: BLUE_PRIMARY + '18' }]}>
-                                <Ionicons name="person" size={20} color={BLUE_PRIMARY} />
+                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                    {recentAttendance.length > 0 ? (
+                        recentAttendance.map((item, index) => (
+                            <View key={index} style={styles.adminLogCard}>
+                                <View style={[styles.adminLogIcon, { backgroundColor: BLUE_PRIMARY + '10' }]}>
+                                    <Ionicons name="checkmark-circle" size={20} color={BLUE_PRIMARY} />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={styles.adminLogTitle}>{item.name}</Text>
+                                    <Text style={styles.adminLogSub}>{item.course_code} · {item.department}</Text>
+                                </View>
+                                <View style={styles.adminLogTime}>
+                                    <Text style={styles.adminLogTimeText}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                                </View>
                             </View>
-                            <View style={{ flex: 1 }}>
-                                <Text style={styles.adminActivityName} numberOfLines={1}>{item.name}</Text>
-                                <Text style={styles.adminActivitySub}>{item.department} · {item.level}</Text>
-                            </View>
-                            <View style={styles.adminTimeBadge}>
-                                <Text style={styles.adminTimeBadgeText}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                        ))
+                    ) : (
+                        <View style={styles.adminEmptyStateNew}>
+                            <Ionicons name="pulse-outline" size={48} color="#CBD5E1" />
+                            <Text style={styles.adminEmptyTextNew}>Monitoring systems... No activity yet.</Text>
+                        </View>
+                    )}
+                    <View style={{ height: 100 }} />
+                </ScrollView>
+            </View>
+        </View>
+    );
+
+    const renderEligibilityChart = () => {
+        const totalCourses = studentCourses.length;
+        if (totalCourses === 0) {
+            return (
+                <View style={[styles.analyticsCard, { marginTop: 24, padding: 32, alignItems: 'center', backgroundColor: '#F8FAFC', borderStyle: 'dashed', borderWidth: 2, borderColor: '#E2E8F0' }]}>
+                    <Ionicons name="book-outline" size={48} color="#CBD5E1" />
+                    <Text style={[styles.modernSectionTitle, { fontSize: 16, color: '#94A3B8', marginTop: 16 }]}>No Courses Registered</Text>
+                    <Text style={{ color: '#94A3B8', fontSize: 12, marginTop: 4, textAlign: 'center' }}>Once you are enrolled in courses, your eligibility will appear here.</Text>
+                </View>
+            );
+        }
+
+        return (
+            <View style={{ marginTop: 24 }}>
+                <View style={{ marginBottom: 24 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '900', color: '#1E293B', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 1.5 }}>Academic Summary</Text>
+                    <LinearGradient
+                        colors={['#F8FAFC', '#F1F5F9']}
+                        style={{ padding: 16, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', flexDirection: 'row', gap: 12, alignItems: 'center' }}
+                    >
+                        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: '#DBEAFE', justifyContent: 'center', alignItems: 'center' }}>
+                            <Ionicons name="information-circle" size={24} color="#2563EB" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 12, color: '#1E293B', fontWeight: '800', marginBottom: 2 }}>Attendance Policy</Text>
+                            <Text style={{ fontSize: 10, color: '#64748B', fontWeight: '500', lineHeight: 14 }}>
+                                A minimum of 75% attendance is required to be eligible to sit for exams.
+                            </Text>
+                        </View>
+                    </LinearGradient>
+                </View>
+
+                {studentCourses.map((course, idx) => {
+                    const isEligible = (course.percentage || 0) >= 75;
+                    const primaryColor = isEligible ? '#059669' : '#EF4444';
+                    const secondaryColor = isEligible ? '#10B981' : '#DC2626';
+                    
+                    return (
+                        <View 
+                            key={idx} 
+                            style={{ 
+                                backgroundColor: '#FFF', 
+                                borderRadius: 24, 
+                                marginBottom: 20, 
+                                overflow: 'hidden', 
+                                elevation: 8,
+                                shadowColor: primaryColor,
+                                shadowOffset: { width: 0, height: 10 },
+                                shadowOpacity: 0.1,
+                                shadowRadius: 15,
+                                borderWidth: 1,
+                                borderColor: '#F1F5F9'
+                            }}
+                        >
+                            <LinearGradient
+                                colors={[primaryColor, secondaryColor]}
+                                style={{ padding: 20 }}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 0 }}
+                            >
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <View>
+                                        <View style={{ backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, alignSelf: 'flex-start', marginBottom: 6 }}>
+                                            <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '900', letterSpacing: 1 }}>{course.code}</Text>
+                                        </View>
+                                        <Text style={{ color: '#FFF', fontSize: 28, fontWeight: '900' }}>{course.percentage}%</Text>
+                                        <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: '700' }}>Current Attendance</Text>
+                                    </View>
+                                    <View style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' }}>
+                                        <Ionicons name={isEligible ? "shield-checkmark" : "alert-circle"} size={32} color="#FFF" />
+                                    </View>
+                                </View>
+                            </LinearGradient>
+                            
+                            <View style={{ padding: 20 }}>
+                                <Text style={{ fontSize: 18, fontWeight: '900', color: '#0F172A', marginBottom: 12 }} numberOfLines={2}>{course.name || 'Course Module'}</Text>
+                                
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+                                    <View style={{ flex: 1, height: 8, backgroundColor: '#F1F5F9', borderRadius: 4, overflow: 'hidden' }}>
+                                        <LinearGradient
+                                            colors={isEligible ? ['#10B981', '#34D399'] : ['#F87171', '#EF4444']}
+                                            style={{ height: '100%', width: `${course.percentage}%` }}
+                                            start={{ x: 0, y: 0 }}
+                                            end={{ x: 1, y: 0 }}
+                                        />
+                                    </View>
+                                    <Text style={{ fontSize: 12, fontWeight: '900', color: primaryColor }}>{course.percentage}%</Text>
+                                </View>
+
+                                <View style={{ 
+                                    padding: 12, 
+                                    borderRadius: 16, 
+                                    backgroundColor: isEligible ? '#F0FDF4' : '#FEF2F2',
+                                    borderWidth: 1,
+                                    borderColor: isEligible ? '#DCFCE7' : '#FEE2E2',
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 12
+                                }}>
+                                    <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: isEligible ? '#10B981' : '#EF4444', justifyContent: 'center', alignItems: 'center' }}>
+                                        <Ionicons name={isEligible ? "checkmark" : "close"} size={20} color="#FFF" />
+                                    </View>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={{ fontSize: 13, fontWeight: '800', color: isEligible ? '#166534' : '#991B1B' }}>
+                                            {isEligible ? 'Eligible to sit for the exam' : 'Not eligible to sit for the exam'}
+                                        </Text>
+                                        <Text style={{ fontSize: 10, color: isEligible ? '#15803D' : '#B91C1C', fontWeight: '600', marginTop: 1 }}>
+                                            {isEligible ? 'Requirement fulfilled' : 'Minimum 75% required'}
+                                        </Text>
+                                    </View>
+                                </View>
                             </View>
                         </View>
-                    ))
-                ) : (
-                    <View style={styles.adminEmptyActivity}>
-                        <Ionicons name="calendar-outline" size={40} color="#CBD5E1" />
-                        <Text style={styles.adminEmptyText}>No attendance records today</Text>
-                    </View>
-                )}
+                    );
+                })}
             </View>
-        </>
-    );
+        );
+    };
+
+    const renderActiveSessionCard = () => {
+        if (!ongoingCourse) {
+            return null;
+        }
+
+        return (
+            <TouchableOpacity
+                activeOpacity={0.9}
+                style={[styles.analyticsCard, { marginTop: 24, padding: 0, overflow: 'hidden', elevation: 8 }]}
+                onPress={() => router.push({ pathname: '/(tabs)/academics', params: { courseId: ongoingCourse.id } } as any)}
+            >
+                <LinearGradient
+                    colors={[BLUE_PRIMARY, '#1E40AF']}
+                    style={{ padding: 24 }}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#4ADE80' }} />
+                                <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 10, fontWeight: '900', letterSpacing: 1 }}>SESSION ACTIVE NOW</Text>
+                            </View>
+                            <Text style={{ color: '#FFF', fontSize: 24, fontWeight: '900', marginBottom: 4 }}>{ongoingCourse.code}</Text>
+                            <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 14, fontWeight: '600' }} numberOfLines={1}>{ongoingCourse.name}</Text>
+                        </View>
+                        <View style={{ width: 56, height: 56, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' }}>
+                            <Ionicons name="flash" size={28} color="#FACC15" />
+                        </View>
+                    </View>
+
+                    <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.1)', marginVertical: 20 }} />
+
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                            <View style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 10 }}>
+                                <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '700' }}>{ongoingCourse.session_time}</Text>
+                            </View>
+                            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600' }}>Room: N/A</Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Text style={{ color: '#FACC15', fontSize: 12, fontWeight: '800' }}>START MARKING</Text>
+                            <Ionicons name="arrow-forward" size={16} color="#FACC15" />
+                        </View>
+                    </View>
+                </LinearGradient>
+            </TouchableOpacity>
+        );
+    };
+
+    const renderIdCard = () => {
+        return (
+            <View style={styles.idCardHeader}>
+                <View style={styles.glowOuterContainer}>
+                    <ReAnimated.View style={[styles.glowRotationWrapper, animatedBorderStyle]}>
+                        <LinearGradient
+                            colors={['#3B82F6', '#8B5CF6', '#FACC15', '#3B82F6']}
+                            style={styles.glowGradient}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                        />
+                    </ReAnimated.View>
+
+                    <View style={styles.glowInnerContent}>
+                        <LinearGradient
+                            colors={['#1E293B', '#0F172A']}
+                            style={styles.idCardBg}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                        >
+                            <View style={styles.idCardContent}>
+                                <View style={styles.idCardTop}>
+                                    <View style={{ flex: 1, marginRight: 8 }}>
+                                        <Text style={styles.schoolName} numberOfLines={3}>AMINU KANO COLLEGE OF ISLAMIC AND LEGAL STUDIES, KANO</Text>
+                                    </View>
+                                    <TouchableOpacity 
+                                        onPress={handleLogout}
+                                        style={[styles.idCardLogoBox, { width: 40, height: 40, backgroundColor: '#FFFFFF' }]}
+                                    >
+                                        <Ionicons name="log-out-outline" size={22} color="#EF4444" />
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.idCardMain}>
+                                    <View style={styles.idCardInfo}>
+                                        <Text style={styles.idCardName}>{userName || 'Student Name'}</Text>
+                                        <Text style={styles.idCardRegNo}>{userProfile?.reg_no || 'REG/2024/0001'}</Text>
+                                        <View style={styles.idCardBadgeRow}>
+                                            <View style={[styles.idCardBadge, { backgroundColor: '#059669' }]}>
+                                                <Text style={styles.idCardStatusText}>ACTIVE</Text>
+                                            </View>
+                                            <View style={[styles.idCardBadge, { backgroundColor: 'rgba(255,255,255,0.1)' }]}>
+                                                <Text style={styles.idCardStatusText}>{(userProfile?.level || '100').toUpperCase()}</Text>
+                                            </View>
+                                        </View>
+                                    </View>
+                                </View>
+
+                                <View style={styles.idCardFooter}>
+                                    <View style={styles.idCardFooterMet}>
+                                        <Text style={styles.idFooterLabel}>DEPARTMENT</Text>
+                                        <Text style={styles.idFooterValue} numberOfLines={1}>{userProfile?.department || 'Computer Science'}</Text>
+                                    </View>
+                                    <View style={styles.qrMiniBox}>
+                                        <Ionicons name="qr-code" size={30} color="rgba(255,255,255,0.8)" />
+                                    </View>
+                                </View>
+                            </View>
+                        </LinearGradient>
+                    </View>
+                </View>
+            </View>
+        );
+    };
 
     const renderStudentView = () => (
         <View style={styles.studentViewContainer}>
-            <View style={styles.studentContentBody}>
-                <SafeAreaView edges={['top']}>
-                    {/* New Header based on Reference */}
-                    <View style={styles.referenceHeader}>
-                        <View style={styles.refHeaderLeft}>
-                            <View style={[styles.refAvatar, { backgroundColor: '#EFF6FF' }]}>
-                                <Ionicons name="person" size={24} color={BLUE_PRIMARY} />
-                            </View>
-                            <View>
-                                <Text style={styles.refWelcome}>Welcome Back!</Text>
-                                <Text style={styles.refName}>{userName || 'Student'}</Text>
-                            </View>
-                        </View>
-                        <View style={{ flexDirection: 'row', gap: 12 }}>
-                            <TouchableOpacity
-                                onPress={() => router.push('/(tabs)/notifications')}
-                                style={styles.refNotificationBtn}
-                            >
-                                <View style={styles.refNotificationDot} />
-                                <Ionicons name="notifications-outline" size={24} color={SLATE_DARK} />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={async () => {
-                                    await supabase.auth.signOut();
-                                    router.replace('/(auth)/login');
-                                }}
-                                style={[styles.refNotificationBtn, { backgroundColor: '#FEF2F2' }]}
-                            >
-                                <Ionicons name="log-out-outline" size={24} color="#DC2626" />
-                            </TouchableOpacity>
-                        </View>
-                    </View>
+            <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={styles.studentContentBody}
+                showsVerticalScrollIndicator={false}
+            >
 
-                    {/* Hero Progress Card */}
-                    <LinearGradient
-                        colors={['#0EA5E9', '#2563EB']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.refHeroCard}
-                    >
-                        <View style={styles.refHeroContent}>
-                            <Text style={styles.refHeroTitle}>Semester Progress</Text>
-                            <View style={styles.refHeroValueRow}>
-                                <Text style={styles.refHeroValue}>{stats.personalRate}%</Text>
-                            </View>
-                            <View style={[styles.refHeroBadge, { backgroundColor: stats.personalRate >= 75 ? 'rgba(5,150,105,0.25)' : 'rgba(220,38,38,0.25)' }]}>
-                                <Text style={[styles.refHeroBadgeText, { color: stats.personalRate >= 75 ? '#6ee7b7' : '#fca5a5' }]}>
-                                    {stats.personalRate >= 75 ? 'Eligible to seat to Seat Exam' : 'Not Eligible to Seat for Exam'}
-                                </Text>
-                            </View>
-                        </View>
-                        {/* Decorative wave element */}
-                        <View style={styles.refHeroWave}>
-                            <Ionicons name="trending-up" size={100} color="rgba(255,255,255,0.15)" style={{ position: 'absolute', right: -10, bottom: -20 }} />
-                        </View>
-                    </LinearGradient>
 
-                    {/* Stats Grid 2x2 */}
-                    <View style={styles.refStatsGrid}>
-                        <View style={styles.refGridRow}>
-                            <View style={styles.refGridCard}>
-                                <View style={[styles.refGridIconBox, { backgroundColor: '#FEF3C7' }]}>
-                                    <Ionicons name="book" size={20} color="#D97706" />
-                                </View>
-                                <Text style={styles.refGridLabel}>Total Courses</Text>
-                                <Text style={styles.refGridValue}>{studentCourses.length}</Text>
-                                <Text style={styles.refGridUpdate}>Update: {new Date().toLocaleDateString()}</Text>
-                            </View>
-                            <View style={styles.refGridCard}>
-                                <View style={[styles.refGridIconBox, { backgroundColor: '#ECFDF5' }]}>
-                                    <Ionicons name="checkmark-circle" size={20} color="#059669" />
-                                </View>
-                                <Text style={styles.refGridLabel}>Average Rate</Text>
-                                <Text style={styles.refGridValue}>{stats.personalRate}%</Text>
-                                <Text style={styles.refGridUpdate}>Update: {new Date().toLocaleDateString()}</Text>
-                            </View>
-                        </View>
-                        <View style={styles.refGridRow}>
-                            <View style={styles.refGridCard}>
-                                <View style={[styles.refGridIconBox, { backgroundColor: '#EFF6FF' }]}>
-                                    <Ionicons name="school" size={20} color="#2563EB" />
-                                </View>
-                                <Text style={styles.refGridLabel}>Department</Text>
-                                <Text style={[styles.refGridValue, { fontSize: 13 }]}>{userProfile?.department || 'N/A'}</Text>
-                                <Text style={styles.refGridUpdate}>Update: {new Date().toLocaleDateString()}</Text>
-                            </View>
-                            <View style={styles.refGridCard}>
-                                <View style={[styles.refGridIconBox, { backgroundColor: '#F5F3FF' }]}>
-                                    <Ionicons name="ribbon" size={20} color="#7C3AED" />
-                                </View>
-                                <Text style={styles.refGridLabel}>Exam Eligibility</Text>
-                                <Text style={[styles.refGridValue, { color: stats.personalRate >= 75 ? '#059669' : '#DC2626' }]}>
-                                    {stats.personalRate >= 75 ? 'Eligible to Write Exam' : 'Not Eligible'}
-                                </Text>
-                                <Text style={styles.refGridUpdate}>Update: {new Date().toLocaleDateString()}</Text>
-                            </View>
-                        </View>
-                    </View>
+                {renderIdCard()}
 
-                    <View style={[styles.overviewHeader, { marginTop: 20 }]}>
-                        <Text style={styles.modernSectionTitle}>Assigned Courses</Text>
-                        <Text style={styles.overviewSub}>{studentCourses.length} enrolled</Text>
-                    </View>
-                </SafeAreaView>
+                {renderEligibilityChart()}
 
-                {studentCourses.length > 0 ? (
-                    studentCourses.map((course, index) => {
-                        const pct = Math.min(100, course.percentage || 0);
-                        const statusColor = pct >= 75 ? '#059669' : pct >= 50 ? '#D97706' : '#DC2626';
-                        const statusBg = pct >= 75 ? '#ECFDF5' : pct >= 50 ? '#FFFBEB' : '#FEF2F2';
-                        const courseColors = ['#2563EB', '#7C3AED', '#059669', '#D97706', '#DC2626', '#0891B2'];
-                        const cardColor = courseColors[index % courseColors.length];
-                        return (
-                            <TouchableOpacity
-                                key={index}
-                                style={styles.richCourseCard}
-                                onPress={() => router.push({ pathname: '/(tabs)/classes', params: { courseId: course.id } })}
-                                activeOpacity={0.85}
-                            >
-                                {/* Left accent bar */}
-                                <View style={[styles.richCourseAccent, { backgroundColor: cardColor }]} />
 
-                                <View style={{ flex: 1, padding: 16 }}>
-                                    {/* Top row: code badge + status chip */}
-                                    <View style={styles.richCourseTopRow}>
-                                        <View style={[styles.richCodeBadge, { backgroundColor: cardColor + '18' }]}>
-                                            <Text style={[styles.richCodeText, { color: cardColor }]}>{course.code}</Text>
-                                        </View>
-                                        <View style={[styles.richStatusChip, { backgroundColor: statusBg }]}>
-                                            <View style={[styles.richStatusDot, { backgroundColor: statusColor }]} />
-                                            <Text style={[styles.richStatusLabel, { color: statusColor }]}>
-                                                {pct >= 75 ? 'Eligible' : pct >= 50 ? 'At Risk' : 'Not Eligible'}
-                                            </Text>
-                                        </View>
-                                    </View>
+                <View style={{ height: 100 }} />
+            </ScrollView>
 
-                                    {/* Course name */}
-                                    <Text style={styles.richCourseName} numberOfLines={2}>{course.name}</Text>
-
-                                    {/* Attendance bar */}
-                                    <View style={styles.richBarRow}>
-                                        <View style={styles.richBarOuter}>
-                                            <View style={[styles.richBarInner, {
-                                                width: `${pct}%` as any,
-                                                backgroundColor: statusColor
-                                            }]} />
-                                        </View>
-                                        <Text style={[styles.richBarPct, { color: statusColor }]}>{pct}%</Text>
-                                    </View>
-
-                                    {/* Bottom row */}
-                                    <View style={styles.richCourseBottomRow}>
-                                        <View style={styles.richMeta}>
-                                            <Ionicons name="checkmark-circle-outline" size={13} color="#64748B" />
-                                            <Text style={styles.richMetaText}>{course.attended} attended</Text>
-                                        </View>
-                                        <View style={styles.richMeta}>
-                                            <Ionicons name="calendar-outline" size={13} color="#64748B" />
-                                            <Text style={styles.richMetaText}>{course.total_sessions || 40} sessions</Text>
-                                        </View>
-                                        <Ionicons name="chevron-forward" size={14} color="#CBD5E1" />
-                                    </View>
-                                </View>
-                            </TouchableOpacity>
-                        );
-                    })
-                ) : (
-                    <View style={[styles.modernEmptyState, { marginVertical: 12 }]}>
-                        <Ionicons name="school-outline" size={40} color="#CBD5E1" />
-                        <Text style={styles.modernEmptyText}>No courses assigned to your level.</Text>
-                    </View>
-                )}
-
-                {renderBooksSection()}
-            </View>
-
-            {/* Quick Action FAB for quick attendance */}
             <TouchableOpacity
                 style={styles.floatingActionBtn}
                 onPress={() => router.push('/(tabs)/register' as any)}
                 activeOpacity={0.85}
             >
-                <LinearGradient
-                    colors={['#2563EB', '#1D4ED8']}
-                    style={styles.fabGradient}
-                >
+                <LinearGradient colors={['#2563EB', '#1D4ED8']} style={styles.fabGradient}>
                     <Ionicons name="finger-print" size={28} color="#FFF" />
                 </LinearGradient>
             </TouchableOpacity>
-        </View >
+        </View>
     );
 
-    const renderBooksSection = () => (
-        <>
-            <View style={[styles.overviewHeader, { marginTop: 24 }]}>
-                <Text style={styles.modernSectionTitle}>Study Materials</Text>
-                <Text style={styles.overviewSub}>{studentBooks.length} available</Text>
-            </View>
-
-            {studentBooks.length > 0 ? (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 10, gap: 16 }}>
-                    {studentBooks.map((book, index) => (
-                        <View key={index} style={styles.bookMaterialCard}>
-                            <View style={styles.bookIconHeader}>
-                                <Ionicons name="book-outline" size={32} color={BLUE_PRIMARY} />
-                                <View style={styles.bookBadge}>
-                                    <Text style={styles.bookBadgeText}>NEW</Text>
-                                </View>
-                            </View>
-                            <Text style={styles.bookTitle} numberOfLines={2}>{book.title}</Text>
-                            <View style={styles.bookFooter}>
-                                <Text style={styles.bookPrice}>₦{book.price.toLocaleString()}</Text>
-                                <TouchableOpacity style={styles.bookActionBtn}>
-                                    <Text style={styles.bookActionText}>View Details</Text>
-                                </TouchableOpacity>
-                            </View>
-                        </View>
-                    ))}
-                </ScrollView>
-            ) : (
-                <View style={[styles.modernEmptyState, { marginVertical: 12 }]}>
-                    <Ionicons name="library-outline" size={40} color="#CBD5E1" />
-                    <Text style={styles.modernEmptyText}>No study materials found for your level.</Text>
-                </View>
-            )}
-        </>
-    );
 
     return (
         <View style={styles.baseContainer}>
             <StatusBar barStyle="dark-content" />
-            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} bounces={false}>
-                {role === 'admin' && renderHeader()}
-                {isLoading ? (
-                    <View style={{ padding: 40 }}>
-                        <ActivityIndicator color={Colors.primary} size="large" />
-                    </View>
-                ) : (
-                    role === 'admin' ? renderAdminView() : renderStudentView()
-                )}
-                <View style={{ height: 100 }} />
-            </ScrollView>
+
+            <AppHeader
+                userName={userName}
+                role={role}
+                unreadCount={unreadCount}
+                onMenuPress={toggleMenu}
+            />
+
+            {isLoading ? (
+                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                    <ActivityIndicator color={BLUE_PRIMARY} size="large" />
+                </View>
+            ) : (
+                role === 'admin' ? renderAdminView() : renderStudentView()
+            )}
+
             {renderMenu()}
         </View>
     );
@@ -1046,15 +1149,26 @@ const styles = StyleSheet.create({
         borderTopWidth: 1,
         borderTopColor: '#F1F5F9',
     },
-    logoutBtn: {
+    modernLogoutBtn: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
+        justifyContent: 'center',
+        gap: 10,
+        backgroundColor: '#FFFFFF',
+        paddingVertical: 14,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 5,
+        elevation: 2,
     },
-    logoutText: {
-        fontSize: 15,
-        fontWeight: '700',
-        color: Colors.danger,
+    modernLogoutText: {
+        fontSize: 16,
+        fontWeight: '800',
+        color: '#EF4444',
     },
     timeBadge: {
         backgroundColor: '#F1F5F9',
@@ -1161,16 +1275,6 @@ const styles = StyleSheet.create({
         fontSize: 9,
         fontWeight: '800',
         letterSpacing: 0.5,
-    },
-    modernLogoutBtn: {
-        width: 36,
-        height: 36,
-        borderRadius: 12,
-        backgroundColor: 'rgba(255, 255, 255, 0.2)',
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: 'rgba(255, 255, 255, 0.2)',
     },
     premiumHeaderCard: {
         paddingTop: 20,
@@ -1971,5 +2075,497 @@ const styles = StyleSheet.create({
         borderRadius: 32,
         justifyContent: 'center',
         alignItems: 'center',
-    }
+    },
+    // New Advanced Dashboard Styles
+    idCardHeader: {
+        marginTop: 24,
+        marginBottom: 20,
+    },
+    idCardBg: {
+        borderRadius: 24,
+        padding: 40,
+        overflow: 'hidden',
+        elevation: 8,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.3,
+        shadowRadius: 20,
+    },
+    idCardContent: {
+        gap: 20,
+    },
+    // Glowing border styles
+    glowOuterContainer: {
+        borderRadius: 28,
+        padding: 4, // Thickness of the glowing border
+        overflow: 'hidden',
+        backgroundColor: '#0F172A',
+        position: 'relative',
+        shadowColor: '#3B82F6',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.5,
+        shadowRadius: 15,
+        elevation: 10,
+    },
+    glowRotationWrapper: {
+        position: 'absolute',
+        top: '-50%',
+        left: '-50%',
+        width: '200%',
+        height: '200%',
+    },
+    glowGradient: {
+        flex: 1,
+        width: '100%',
+        height: '100%',
+    },
+    glowInnerContent: {
+        flex: 1,
+        borderRadius: 24,
+        overflow: 'hidden',
+        backgroundColor: '#0F172A',
+    },
+    idCardTop: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+    },
+    schoolName: {
+        color: '#FFF',
+        fontSize: 10,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+        lineHeight: 14,
+    },
+    idCardLabel: {
+        color: '#FFF',
+        fontSize: 14,
+        fontWeight: '800',
+        marginTop: 2,
+    },
+    idCardLogoBox: {
+        width: 44,
+        height: 44,
+        borderRadius: 12,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    idCardMain: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 20,
+    },
+    idCardAvatarBox: {
+        position: 'relative',
+    },
+    idCardAvatar: {
+        width: 90,
+        height: 90,
+        borderRadius: 45,
+        borderWidth: 3,
+        borderColor: 'rgba(255,255,255,0.2)',
+    },
+    activePulse: {
+        position: 'absolute',
+        bottom: 4,
+        right: 4,
+        width: 14,
+        height: 14,
+        borderRadius: 7,
+        backgroundColor: '#10B981',
+        borderWidth: 2,
+        borderColor: '#0F172A',
+    },
+    idCardInfo: {
+        flex: 1,
+    },
+    idCardName: {
+        color: '#FFF',
+        fontSize: 24,
+        fontWeight: '900',
+        marginBottom: 4,
+    },
+    idCardRegNo: {
+        color: 'rgba(255,255,255,0.7)',
+        fontSize: 14,
+        fontWeight: '700',
+        marginBottom: 10,
+        letterSpacing: 0.5,
+    },
+    idCardBadgeRow: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    idCardBadge: {
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    idCardStatusText: {
+        color: '#FFF',
+        fontSize: 9,
+        fontWeight: '900',
+    },
+    idCardFooter: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-end',
+        paddingTop: 16,
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(255,255,255,0.1)',
+    },
+    idCardFooterMet: {
+        flex: 1,
+    },
+    idFooterLabel: {
+        color: 'rgba(255,255,255,0.4)',
+        fontSize: 9,
+        fontWeight: '800',
+        marginBottom: 2,
+    },
+    idFooterValue: {
+        color: '#FFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    qrMiniBox: {
+        opacity: 0.8,
+    },
+    headerActionRow: {
+        flexDirection: 'row',
+        paddingHorizontal: 16,
+        gap: 12,
+        marginBottom: 24,
+    },
+    headerActionBtn: {
+        flex: 1,
+        backgroundColor: '#FFF',
+        borderRadius: 16,
+        padding: 12,
+        alignItems: 'center',
+        gap: 6,
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+        elevation: 2,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+    },
+    headerActionLabel: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#64748B',
+    },
+    analyticsSection: {
+        paddingHorizontal: 16,
+        marginBottom: 24,
+    },
+    inlineBadge: {
+        backgroundColor: '#F1F5F9',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    inlineBadgeText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#64748B',
+    },
+    analyticsCard: {
+        backgroundColor: '#FFF',
+        borderRadius: 24,
+        padding: 24,
+        alignItems: 'center',
+        gap: 24,
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+        elevation: 4,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+    },
+    analyticsStats: {
+        alignItems: 'center',
+        gap: 4,
+    },
+    analyticsLabel: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#64748B',
+    },
+    analyticsValue: {
+        fontSize: 54,
+        lineHeight: 60,
+        fontWeight: '900',
+        color: '#0F172A',
+        marginTop: 4,
+    },
+    trendRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    trendText: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#059669',
+    },
+    sparklineBox: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        gap: 12,
+        height: 80,
+    },
+    sparkCol: {
+        alignItems: 'center',
+        gap: 4,
+    },
+    sparkBar: {
+        width: 14,
+        borderRadius: 7,
+    },
+    sparkDay: {
+        fontSize: 9,
+        fontWeight: '600',
+        color: '#94A3B8',
+    },
+    studentNameAnalytic: {
+        fontSize: 20,
+        fontWeight: '900',
+        color: '#0F172A',
+        textAlign: 'center',
+    },
+    regNoAnalytic: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#64748B',
+        textAlign: 'center',
+        marginTop: 2,
+        letterSpacing: 1,
+    },
+    studentLogoutBtn: {
+        position: 'absolute',
+        top: 20,
+        right: 20,
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: '#FFFFFF',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+        zIndex: 10,
+    },
+    identityGroup: {
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    verifiedRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    verifiedBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        backgroundColor: '#F0FDF4',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#DCFCE7',
+    },
+    verifiedText: {
+        fontSize: 8,
+        fontWeight: '900',
+        color: '#059669',
+        letterSpacing: 0.5,
+    },
+    metricsDivider: {
+        width: '40%',
+        height: 1,
+        backgroundColor: '#F1F5F9',
+        alignSelf: 'center',
+        marginBottom: 24,
+    },
+    attendanceValueBox: {
+        alignItems: 'center',
+        marginBottom: 32,
+    },
+    systemStatusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        marginTop: 24,
+        paddingTop: 16,
+        borderTopWidth: 1,
+        borderTopColor: '#F8FAFC',
+    },
+    statusDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: '#10B981',
+    },
+    systemStatusText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#94A3B8',
+        letterSpacing: 0.2,
+    },
+    // Admin Overhaul Styles
+    adminHeroNew: {
+        paddingTop: 20,
+        paddingBottom: 40,
+        paddingHorizontal: 20,
+        borderBottomLeftRadius: 32,
+        borderBottomRightRadius: 32,
+    },
+    adminHeroTop: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 32,
+    },
+    adminSystemName: {
+        color: 'rgba(255,255,255,0.5)',
+        fontSize: 10,
+        fontWeight: '900',
+        letterSpacing: 2,
+    },
+    adminStatusTitle: {
+        color: '#FFF',
+        fontSize: 24,
+        fontWeight: '900',
+    },
+    adminProfileBtnNew: {
+        width: 48,
+        height: 48,
+        borderRadius: 16,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    adminStatRowNew: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 24,
+        padding: 20,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    adminStatItemNew: {
+        alignItems: 'center',
+    },
+    adminStatValNew: {
+        fontSize: 20,
+        fontWeight: '900',
+        color: '#FFF',
+    },
+    adminStatLabNew: {
+        fontSize: 9,
+        fontWeight: '700',
+        color: 'rgba(255,255,255,0.4)',
+        marginTop: 2,
+        textTransform: 'uppercase',
+    },
+    adminStatDivider: {
+        width: 1,
+        height: 24,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+    },
+    adminContentBodyNew: {
+        flex: 1,
+        paddingHorizontal: 20,
+        marginTop: 24,
+    },
+    adminActionsGridNew: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginTop: 16,
+    },
+    adminActionCardNew: {
+        width: '23%',
+        backgroundColor: '#FFF',
+        borderRadius: 20,
+        padding: 12,
+        alignItems: 'center',
+        gap: 8,
+        elevation: 2,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+    },
+    adminActionIconNew: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    adminActionLabelNew: {
+        fontSize: 10,
+        fontWeight: '800',
+        color: '#475569',
+    },
+    adminLogCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        backgroundColor: '#FFF',
+        padding: 16,
+        borderRadius: 20,
+        marginBottom: 12,
+        borderWidth: 1,
+        borderColor: '#F1F5F9',
+    },
+    adminLogIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    adminLogTitle: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#0F172A',
+    },
+    adminLogSub: {
+        fontSize: 11,
+        color: '#64748B',
+        marginTop: 2,
+    },
+    adminLogTime: {
+        backgroundColor: '#F8FAFC',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 8,
+    },
+    adminLogTimeText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#64748B',
+    },
+    adminEmptyStateNew: {
+        alignItems: 'center',
+        paddingVertical: 60,
+        gap: 12,
+    },
+    adminEmptyTextNew: {
+        fontSize: 13,
+        color: '#94A3B8',
+        fontWeight: '500',
+    },
 });

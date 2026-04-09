@@ -53,9 +53,9 @@ export default function TabLayout() {
             />
 
             <ExpoTabs.Screen
-                name="classes"
+                name="academics"
                 options={{
-                    title: 'Assign Course',
+                    title: 'Academics',
                     tabBarIcon: ({ color }) => (
                         <Ionicons name="book" size={24} color={color} />
                     ),
